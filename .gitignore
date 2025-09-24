@@ -54,3 +54,7 @@ logs/
 # Results and outputs (optional - remove if you want to track results)
 # results/
 # outputs/
+
+.claude
+.gemini
+
