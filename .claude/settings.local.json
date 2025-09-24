@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "Read(//mnt/c/Users/dmorr/postprocessing/snapshot-safari/snapshot-safari-2025-09-19-v1000.0.0-redwood/combined_api_outputs/**)",
+      "Bash(python3:*)",
+      "Read(//mnt/g/snapshot_safari_2024_expansion/SER/**)",
+      "WebFetch(domain:ai.google.dev)",
+      "WebSearch"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

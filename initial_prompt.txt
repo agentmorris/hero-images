@@ -1,0 +1,102 @@
+# Overview
+
+I work with large collections of images from motion-triggered wildlife cameras (aka "camera traps").  A typical collection would be around 1M images.  Most images typically have no animals in them, and most of the images that have animals in them are not aesthetically pleasing: animals are often blurry, at the edge of the frame, partially obscured by vegetation, etc.
+
+I would like to develop a method for automatically identifying "hero images" from a collection: i.e., images that are aesthetically pleaning, regardless of their ecological importance.  The qualities of a "hero image" might include a well-framed animal, an animal with cubs, interesting animal behavior, good lighting, multiple species, predators carrying prey, animals experiencing unusual weather patterns, etc.  I already have AI models to (a) detect animals in camera trap images and put bounding boxes on them and (b) classify species in camera trap images; I'm looking to develop a new model just for the aesthetic classification.  Collections tend to be large, so although frontier models are likely good at this task, I don't expect the typical workflow to involve sending all the images in a collection to a frontier model; rather, I want to train a local model for this task.
+
+I plan to divide this project into roughly three stages: (a) candidate training image selection, (b) hybrid human/LLM labeling, (c) model training.  In the next section of this prompt, I'll discuss each of these stages.
+
+# Project stages
+
+## Candidate training image selection
+
+I have a virtually unlimited set of images that could be assigned aesthetic ratings, but a limited budget in time and money to label them.  And most camera trap images are not visually interesting, so randomly sampling images for labeling is not likely to be effective.  Consequently, I need to filter for images that are likely to be interesting, before proceeding to the labeling stage.  If I'm eventually going to train a supervised classifier, I also need to choose  some images that are *not* likely to be interesting.
+
+There are two ways I might do this:
+
+* Heuristics: I already have the results of a reliable object detector (for the coarse-grained category "animal") and a reliable species classifer for a large collection of images on this computer.  I can use this to choose images that might be aesthetically interesting using heuristics, e.g. based on how large the animals are (in pixels), how close they are to the middle of the image, whether there are multiple animals, whether there are multiple species, etc.  Some diversity should be represented in these heuristics: it's not clear that "multiple species are better", for example, but if I sample several thousand images, I probably want a mix of single-species and multi-species images.
+
+* Other AI models: there may be locally-executable AI models that can help with this task; I would like your input on whether there are models I should try here.  These might be models specifically trained for finding aesthetically pleasing images, or they might be general-purpose VLMs that have the capability to query for things like "well-posed animal".  I have two large GPUs on this machine, so running an open-weights VLM on large collections is a reasonable ask.
+
+I am somewhat inclined to start with the heuristic approach for today, but I would like your input on AI models that might be candidates for this first stage of filtering, and I would like to architect the system in a way that allows me to swap different sampling methods in later.
+
+We can assume that any system using this model would also have access to object detection results that can be used to eliminate blank images and images of people, so it's probably not necessary to include empty images (i.e., images with no animals) in the training data.  I am interested in your opinion on whether there's any benefit to showing a model that these are "boring", even if it's not likely to see empty images in real inference scenarios.
+
+
+## Hybrid human/LLM labeling
+
+Once I've selected candidates for labeling, I would like to divide the work of labeling across a human labeler (me) and a frontier model.  I have not settled on a precise task for labeling yet, but I am leaning toward something like a 0-10 quality rating, with 10 being the highest.  I would like your opinion on the framing of the labeling task.  I anticipate that I can label around 2500 images myself, and that I can pay for a frontier model to label about 2500-10000 images, depending on which model I use.
+
+For the human labeling, I am comfortable using an existing tool (probably Labelme), though I am also OK working with you to put together a bespoke UI for labeling.  By default, I will use Labelme.
+
+For the LLM labeling, I prefer to use Gemini.  I am interested in your opinions on the tradeoffs between using Gemini 2.5 Pro vs. Flash for this aesthetic rating task, or whether there are other models I should be considering.
+
+
+## Model training
+
+I don't have strong opinions about what model or framework to use, or whether I want to train a classifier ("good" or "bad" images) or a regressor (an aesthetic score from 0 to 10).  I don't have a strong opinion on architecture, but speed is generally not an issue, so I am inclined to use a larger architecture pretrained on ImageNet with some number of frozen layers.  I am interested in your opinions on frameworks, architectures, and tasks (i.e., classification vs. regression).
+
+
+# Implementation notes
+
+I prefer to work in Python.
+
+You are running in WSL on a Windows machine that has two RTX 4090s available.  You are running in an Anaconda environment in which we can install Python packages.
+
+A good set of starter images (~1.3M images) is available in:
+
+/mnt/g/snapshot_safari_2024_expansion/SER
+
+The object detection and species classification results for this images are available at:
+
+/mnt/c/Users/dmorr/postprocessing/snapshot-safari/snapshot-safari-2025-09-19-v1000.0.0-redwood/combined_api_outputs/snapshot-safari-2025-09-19-v1000.0.0-redwood-ensemble_output_modular_image-level.md-format.within_image_smoothing.json
+
+This file contains information about, e.g., object size and location (which may be helpful for selecting images that are likely to be interesting).  These results are in the MegaDetector output format, which is described here:
+
+https://github.com/agentmorris/MegaDetector/tree/main/megadetector/api/batch_processing#megadetector-batch-output-format
+
+Please read the format, but I will also summarize the gist of it here: for every image in the collection, the .json results file includes a list of detections (bounding boxes) with confidence values, and for each detection, the .json results file may include a list of species classifications with confidence values.  There are a large number of low-confidence detections/classifications included in the file that are not meaningful.  A good threshold for detection results in this case is probably 0.3; a good threshold for classification results is probably 0.5.
+
+
+# Next steps
+
+Please respond to the questions in this prompt on which I've asked for your opinion, then we will formulate a high-level plan and start working on the training image selection (phase I).
+
+
+
+--
+
+Updated file:
+
+/mnt/c/Users/dmorr/postprocessing/snapshot-safari/snapshot-safari-2025-09-19-v1000.0.0-redwood/combined_api_outputs/snapshot-safari-2025-09-19-v1000.0.0-redwood-ensemble_output_modular_image-level.md-format.within_image_smoothing.seqsmoothing.json
+
+--
+
+Yes, but first a couple of practical notes on how to store these.  I think it will be easiest if we copy the images that need labeling to a new folder.  The base folder for data related to this project will be:
+
+/mnt/c/temp/hero-images
+
+Create a folder called "candidates" within that folder, and copy canidates there.  It's best if the folder structure is flat, but I also want to be able to refer back to the original images, so my recommendation is to copy images to this folder, but replace /'s (or \'s) with #, so if you want to use an image like:
+
+a/b/c/image001.jpg
+
+Copy this to an image in the output folder called:
+
+a#b#c#image001.jpg
+
+Let me know if you have any questions or suggestions, otherwise proceed with finding candidates.
+
+--
+
+Before we proceed, I'd like to make another change to the heuristics.  Camera trap images are generally captured in bursts of several images at a time (typically 3-10), and they are typically very similar.  In many cases, because your heuristics ranked one image in a burst highly, others from the same burst are included in the sample, which is hurting our diversity: many consecutive, nearly-identical images are included in the sample.  There is an additional metadata file here:
+
+/mnt/c/temp/hero-images/snapshot_safari_2024_metadata.ser.json
+
+...in COCO Camera Traps format:
+
+https://github.com/agentmorris/MegaDetector/blob/main/megadetector/data_management/README.md#coco-camera-traps-format
+
+Each image has a field called "seq_id", which indicates the burst (aka "sequence") that this image came from.  Revise the sampling heuristics to make sure that only one image from each burst is sampled.
+
+
+--
