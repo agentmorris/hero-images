@@ -46,7 +46,7 @@ def copy_and_resize_image(source_path: str, output_folder: str, filename: str, m
         return ""
 
 
-def generate_html_visualization(json_file_path: str, output_html_path: str, sample: int = 500, top_only: bool = False):
+def generate_html_visualization(json_file_path: str, output_html_path: str, sample: int = 500, top_only: bool = False, sort_by: str = 'filename'):
     """Generate HTML file showing images with their Gemini ratings."""
 
     print(f"Loading results from {json_file_path}...")
@@ -245,16 +245,23 @@ def generate_html_visualization(json_file_path: str, output_html_path: str, samp
         # Insert before the closing tags
         html_content = html_content.replace("            </div>\n        </div>\n    \"\"\"", f"            {processing_time_stat}\n            </div>\n        </div>\n    \"\"\"")
 
-    # Sort successful by score (descending)
-    successful_results.sort(key=lambda x: x['aesthetic_score'], reverse=True)
+    # Sort results based on user preference
+    if sort_by == 'score':
+        print(f"Sorting by score (highest to lowest)")
+        successful_results.sort(key=lambda x: x['aesthetic_score'], reverse=True)
+        failed_results.sort(key=lambda x: x['image_filename'])  # Failed by filename for consistency
+    else:  # sort_by == 'filename'
+        print(f"Sorting by filename (alphabetical)")
+        successful_results.sort(key=lambda x: x['image_filename'])
+        failed_results.sort(key=lambda x: x['image_filename'])
 
     # Apply filtering based on arguments
     if top_only:
-        # Show only successful results (highest scores first)
+        # Show only successful results
         sorted_results = successful_results
         print(f"Filtering to top-scoring images only: {len(sorted_results)} results")
     else:
-        # Combine: successful first (high to low), then failed
+        # Combine: successful first, then failed (both sorted according to sort_by preference)
         sorted_results = successful_results + failed_results
 
     # Apply random sampling if specified
@@ -262,6 +269,19 @@ def generate_html_visualization(json_file_path: str, output_html_path: str, samp
         total_count = len(sorted_results)
         sorted_results = random.sample(sorted_results, sample)
         print(f"Randomly sampling {sample} out of {total_count} results")
+
+        # Re-apply sorting to the sampled results
+        if sort_by == 'score':
+            print(f"Re-sorting sampled results by score (highest to lowest)")
+            # Separate successful and failed in the sample
+            sampled_successful = [r for r in sorted_results if r['success']]
+            sampled_failed = [r for r in sorted_results if not r['success']]
+            sampled_successful.sort(key=lambda x: x['aesthetic_score'], reverse=True)
+            sampled_failed.sort(key=lambda x: x['image_filename'])
+            sorted_results = sampled_successful + sampled_failed
+        else:  # sort_by == 'filename'
+            print(f"Re-sorting sampled results by filename (alphabetical)")
+            sorted_results.sort(key=lambda x: x['image_filename'])
 
     # Add each image result
     for i, result in enumerate(sorted_results):
@@ -355,6 +375,12 @@ def main():
         action='store_true',
         help='Show only highest-scoring images (ignores failed results)'
     )
+    parser.add_argument(
+        '--sort-by',
+        choices=['filename', 'score'],
+        default='filename',
+        help='Sort results by filename (default) or score (highest to lowest)'
+    )
     args = parser.parse_args()
 
     # Determine input source
@@ -403,7 +429,7 @@ def main():
 
     print(f"Creating HTML visualization for: {json_filename}")
 
-    generate_html_visualization(json_path, html_path, args.sample, args.top_only)
+    generate_html_visualization(json_path, html_path, args.sample, args.top_only, args.sort_by)
 
     print(f"\n✅ Visualization complete!")
     print(f"📁 Open in browser: {html_path}")

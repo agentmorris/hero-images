@@ -199,6 +199,62 @@ Do not include any text before or after the JSON."""
         print(f"✓ Batch metadata saved to: {metadata_path}")
         return metadata_path
 
+    def save_raw_responses_debug(self, results: List[Any], image_paths: List[str]) -> None:
+        """Save raw API responses to debug file for troubleshooting alignment issues."""
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        debug_filename = f"gemini_batch_debug_responses_{timestamp}.json"
+        debug_path = os.path.join("/mnt/c/temp/hero-images/labels/", debug_filename)
+
+        debug_data = {
+            "timestamp": timestamp,
+            "total_results": len(results),
+            "total_expected": len(image_paths),
+            "expected_image_order": [
+                {
+                    "index": i,
+                    "path": path,
+                    "filename": os.path.basename(path)
+                }
+                for i, path in enumerate(image_paths)
+            ],
+            "raw_responses": []
+        }
+
+        for i, result in enumerate(results):
+            response_debug = {
+                "response_index": i,
+                "has_response": bool(result.response),
+                "has_text": bool(result.response and hasattr(result.response, 'text') and result.response.text),
+                "response_text": "",
+                "parsed_json": None,
+                "parsing_error": None
+            }
+
+            if result.response and hasattr(result.response, 'text') and result.response.text:
+                response_text = result.response.text.strip()
+                response_debug["response_text"] = response_text
+
+                # Try to parse JSON
+                try:
+                    if response_text.startswith('```json'):
+                        response_text = response_text[7:]
+                    if response_text.endswith('```'):
+                        response_text = response_text[:-3]
+                    response_text = response_text.strip()
+
+                    parsed = json.loads(response_text)
+                    response_debug["parsed_json"] = parsed
+                except Exception as e:
+                    response_debug["parsing_error"] = str(e)
+
+            debug_data["raw_responses"].append(response_debug)
+
+        with open(debug_path, 'w', encoding='utf-8') as f:
+            json.dump(debug_data, f, indent=2)
+
+        print(f"✓ Raw responses saved for debugging: {debug_path}")
+
     def submit_batch_job(self, batch_requests_and_paths: List[tuple]) -> tuple:
         """
         Submit batch job to Gemini using new API.
@@ -383,20 +439,23 @@ Do not include any text before or after the JSON."""
 
             print(f"✓ Response count validation passed: {actual_count} results match {expected_count} expected")
 
-            # Process results using order-based matching (API guarantees order preservation)
+            # Save raw responses for debugging
+            self.save_raw_responses_debug(results, image_paths)
+
+            # Create lookup mapping of expected filenames to paths
+            expected_filenames = {}
+            for path in image_paths:
+                filename = os.path.basename(path)
+                expected_filenames[filename] = path
+
+            print(f"✓ Created filename lookup for {len(expected_filenames)} expected images")
+
+            # Process results using filename-based matching (no order assumptions)
             processed_results = []
+            returned_filenames = []
 
-            for result in results:
+            for result_index, result in enumerate(results):
                 try:
-                    # Use order-based matching (API guarantees order preservation)
-                    result_index = len(processed_results)  # Use current count as index
-                    if result_index < len(image_paths):
-                        image_path = image_paths[result_index]
-                        image_filename = os.path.basename(image_path)
-                    else:
-                        image_path = f"unknown_image_{result_index}.jpg"
-                        image_filename = f"unknown_image_{result_index}.jpg"
-
                     if result.response and hasattr(result.response, 'text') and result.response.text:
                         response_text = result.response.text.strip()
 
@@ -409,54 +468,58 @@ Do not include any text before or after the JSON."""
                         response_text = response_text.strip()
                         response_json = json.loads(response_text)
 
-                        # Validate that the returned image_filename matches expected filename
+                        # Get filename from response (trust what Gemini returned)
                         returned_filename = response_json.get('image_filename', '')
-                        if returned_filename != image_filename:
-                            print(f"⚠️  Warning: Filename mismatch for result {len(processed_results)}:")
-                            print(f"   Expected: {image_filename}")
-                            print(f"   Returned: {returned_filename}")
-                            print(f"   This suggests order mismatch - treating as validation failure")
 
-                            processed_result = {
-                                'image_path': image_path,
-                                'image_filename': image_filename,
-                                'success': False,
-                                'error_message': f"Filename validation failed: expected '{image_filename}' but got '{returned_filename}'"
-                            }
-                        else:
-                            processed_result = {
-                                'image_path': image_path,
-                                'image_filename': image_filename,
-                                'aesthetic_score': float(response_json['score']),
-                                'reasoning': response_json['reasoning'],
-                                'success': True
-                            }
+                        if not returned_filename:
+                            print(f"⚠️  Warning: Response {result_index} has no image_filename field - skipping")
+                            continue
 
-                    else:
-                        # Handle error
-                        error_msg = getattr(result, 'error', 'Unknown error')
+                        # Check for filename uniqueness
+                        if returned_filename in returned_filenames:
+                            print(f"❌ Error: Duplicate filename detected: '{returned_filename}'")
+                            print(f"   This filename was already returned in a previous response")
+                            print("   Aborting processing due to non-unique filenames")
+                            raise Exception(f"Duplicate filename in responses: '{returned_filename}'")
+
+                        returned_filenames.append(returned_filename)
+
+                        # Check if filename matches any expected filename
+                        if returned_filename not in expected_filenames:
+                            print(f"⚠️  Warning: Response {result_index} returned unexpected filename '{returned_filename}' - skipping")
+                            continue
+
+                        # Create successful result using filename-based lookup
+                        image_path = expected_filenames[returned_filename]
                         processed_result = {
                             'image_path': image_path,
-                            'image_filename': image_filename,
-                            'aesthetic_score': 0.0,
-                            'reasoning': '',
-                            'success': False,
-                            'error_message': str(error_msg)
+                            'image_filename': returned_filename,
+                            'aesthetic_score': float(response_json['score']),
+                            'reasoning': response_json['reasoning'],
+                            'success': True
                         }
 
-                    processed_results.append(processed_result)
+                        processed_results.append(processed_result)
+
+                    else:
+                        # Handle error responses with no text
+                        print(f"⚠️  Warning: Response {result_index} has no valid text - skipping")
 
                 except Exception as e:
-                    print(f"  Warning: Error processing result: {e}")
-                    # Add a failed result to maintain count
-                    processed_results.append({
-                        'image_path': 'error_processing',
-                        'image_filename': 'error_processing',
-                        'aesthetic_score': 0.0,
-                        'reasoning': '',
-                        'success': False,
-                        'error_message': str(e)
-                    })
+                    # Check if this is the duplicate filename error that should abort
+                    if "Duplicate filename in responses" in str(e):
+                        raise  # Re-raise to abort processing
+
+                    # For other errors, just log and skip this response
+                    print(f"⚠️  Warning: Error processing response {result_index}: {e} - skipping")
+
+            # Summary of filename-based processing
+            successful_count = len([r for r in processed_results if r['success']])
+            print(f"✓ Filename-based processing complete:")
+            print(f"   • Total API responses: {len(results)}")
+            print(f"   • Valid responses processed: {len(processed_results)}")
+            print(f"   • Successful labels: {successful_count}")
+            print(f"   • Unique filenames returned: {len(returned_filenames)}")
 
             return processed_results
 
