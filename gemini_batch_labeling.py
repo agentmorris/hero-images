@@ -107,7 +107,8 @@ Rating scale:
 Respond with ONLY a JSON object in this exact format:
 {
   "score": [number from 0-10],
-  "reasoning": "[2-3 sentence explanation of the score]"
+  "reasoning": "[2-3 sentence explanation of the score]",
+  "image_filename": "[the filename of the image you are analyzing]"
 }
 
 Do not include any text before or after the JSON."""
@@ -132,7 +133,11 @@ Do not include any text before or after the JSON."""
                 image_bytes = ImageProcessor.resize_image_to_768_long_side(image_path)
                 image_b64 = base64.b64encode(image_bytes).decode('utf-8')
 
-                # Create request in new format (custom_id not allowed in inlined_requests)
+                # Create custom prompt with filename for cross-validation
+                filename = os.path.basename(image_path)
+                custom_prompt = self.prompt + f"\n\nNote: You are analyzing the image file named '{filename}'. Please include this exact filename in the image_filename field of your JSON response."
+
+                # Create request with proper structure for batch API
                 request = {
                     'contents': [{
                         'parts': [
@@ -143,7 +148,7 @@ Do not include any text before or after the JSON."""
                                 }
                             },
                             {
-                                'text': self.prompt
+                                'text': custom_prompt
                             }
                         ],
                         'role': 'user'
@@ -370,19 +375,30 @@ Do not include any text before or after the JSON."""
             results = batch_job.dest.inlined_responses
             print(f"✓ Found {len(results)} results")
 
-            # Process results (matching by index since no custom_id)
+            # Validate response count matches expected count
+            expected_count = len(image_paths)
+            actual_count = len(results)
+            if actual_count != expected_count:
+                raise Exception(f"Response count mismatch: expected {expected_count} results but got {actual_count}. This indicates a problem with batch processing order.")
+
+            print(f"✓ Response count validation passed: {actual_count} results match {expected_count} expected")
+
+            # Process results using order-based matching (API guarantees order preservation)
             processed_results = []
 
-            for i, result in enumerate(results):
+            for result in results:
                 try:
-                    if i >= len(image_paths):
-                        print(f"  Warning: More results than images: {i}")
-                        break
+                    # Use order-based matching (API guarantees order preservation)
+                    result_index = len(processed_results)  # Use current count as index
+                    if result_index < len(image_paths):
+                        image_path = image_paths[result_index]
+                        image_filename = os.path.basename(image_path)
+                    else:
+                        image_path = f"unknown_image_{result_index}.jpg"
+                        image_filename = f"unknown_image_{result_index}.jpg"
 
-                    image_path = image_paths[i]
-
-                    if result.response:
-                        response_text = result.response.text
+                    if result.response and hasattr(result.response, 'text') and result.response.text:
+                        response_text = result.response.text.strip()
 
                         # Parse JSON response (handle markdown)
                         if response_text.startswith('```json'):
@@ -393,20 +409,35 @@ Do not include any text before or after the JSON."""
                         response_text = response_text.strip()
                         response_json = json.loads(response_text)
 
-                        processed_result = {
-                            'image_path': image_path,
-                            'image_filename': os.path.basename(image_path),
-                            'aesthetic_score': float(response_json['score']),
-                            'reasoning': response_json['reasoning'],
-                            'success': True
-                        }
+                        # Validate that the returned image_filename matches expected filename
+                        returned_filename = response_json.get('image_filename', '')
+                        if returned_filename != image_filename:
+                            print(f"⚠️  Warning: Filename mismatch for result {len(processed_results)}:")
+                            print(f"   Expected: {image_filename}")
+                            print(f"   Returned: {returned_filename}")
+                            print(f"   This suggests order mismatch - treating as validation failure")
+
+                            processed_result = {
+                                'image_path': image_path,
+                                'image_filename': image_filename,
+                                'success': False,
+                                'error_message': f"Filename validation failed: expected '{image_filename}' but got '{returned_filename}'"
+                            }
+                        else:
+                            processed_result = {
+                                'image_path': image_path,
+                                'image_filename': image_filename,
+                                'aesthetic_score': float(response_json['score']),
+                                'reasoning': response_json['reasoning'],
+                                'success': True
+                            }
 
                     else:
                         # Handle error
                         error_msg = getattr(result, 'error', 'Unknown error')
                         processed_result = {
                             'image_path': image_path,
-                            'image_filename': os.path.basename(image_path),
+                            'image_filename': image_filename,
                             'aesthetic_score': 0.0,
                             'reasoning': '',
                             'success': False,
@@ -416,7 +447,16 @@ Do not include any text before or after the JSON."""
                     processed_results.append(processed_result)
 
                 except Exception as e:
-                    print(f"  Warning: Error processing result {i}: {e}")
+                    print(f"  Warning: Error processing result: {e}")
+                    # Add a failed result to maintain count
+                    processed_results.append({
+                        'image_path': 'error_processing',
+                        'image_filename': 'error_processing',
+                        'aesthetic_score': 0.0,
+                        'reasoning': '',
+                        'success': False,
+                        'error_message': str(e)
+                    })
 
             return processed_results
 

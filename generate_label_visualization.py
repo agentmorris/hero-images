@@ -6,21 +6,47 @@ Shows images alongside their aesthetic scores and reasoning.
 import json
 import os
 import base64
+import random
 from typing import Dict, Any
 
 
-def image_to_base64(image_path: str) -> str:
-    """Convert image to base64 for HTML embedding."""
+def copy_and_resize_image(source_path: str, output_folder: str, filename: str, max_size: int = 400) -> str:
+    """Copy and resize image to output folder, return relative path."""
     try:
-        with open(image_path, 'rb') as img_file:
-            img_data = img_file.read()
-            return base64.b64encode(img_data).decode('utf-8')
+        from PIL import Image
+
+        # Create safe filename
+        safe_filename = filename.replace('#', '_').replace(':', '_')
+        output_path = os.path.join(output_folder, safe_filename)
+
+        # Open and resize image
+        with Image.open(source_path) as img:
+            # Convert to RGB if necessary
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+
+            # Calculate new size maintaining aspect ratio
+            width, height = img.size
+            if width > height:
+                new_width = min(max_size, width)
+                new_height = int((height * new_width) / width)
+            else:
+                new_height = min(max_size, height)
+                new_width = int((width * new_height) / height)
+
+            # Resize and save
+            resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            resized_img.save(output_path, 'JPEG', quality=85, optimize=True)
+
+        # Return relative path for HTML
+        return os.path.join(os.path.basename(output_folder), safe_filename)
+
     except Exception as e:
-        print(f"Warning: Could not load image {image_path}: {e}")
+        print(f"Warning: Could not process image {source_path}: {e}")
         return ""
 
 
-def generate_html_visualization(json_file_path: str, output_html_path: str):
+def generate_html_visualization(json_file_path: str, output_html_path: str, sample: int = 500, top_only: bool = False):
     """Generate HTML file showing images with their Gemini ratings."""
 
     print(f"Loading results from {json_file_path}...")
@@ -34,6 +60,25 @@ def generate_html_visualization(json_file_path: str, output_html_path: str):
 
     print(f"Found {len(results)} labeled images")
 
+    # Create image subfolder
+    html_basename = os.path.splitext(os.path.basename(output_html_path))[0]
+    images_folder_name = f"{html_basename}_images"
+    images_folder_path = os.path.join(os.path.dirname(output_html_path), images_folder_name)
+    os.makedirs(images_folder_path, exist_ok=True)
+
+    print(f"Creating image folder: {images_folder_path}")
+
+    # Sort results by score (highest first) for better viewing
+    successful_results = [r for r in results if r['success']]
+    failed_results = [r for r in results if not r['success']]
+
+    # Check if results were sampled
+    display_note = ""
+    if sample > 0 and len(results) > sample:
+        display_note = f" (showing random sample of {sample} from {len(results)})"
+    elif top_only and failed_results:
+        display_note = f" (showing {len(successful_results)} successful results only)"
+
     # Start building HTML
     html_content = f"""
     <!DOCTYPE html>
@@ -41,7 +86,7 @@ def generate_html_visualization(json_file_path: str, output_html_path: str):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Gemini Hero Image Labeling Results</title>
+        <title>Gemini Hero Image Labeling Results{display_note}</title>
         <style>
             body {{
                 font-family: Arial, sans-serif;
@@ -200,22 +245,30 @@ def generate_html_visualization(json_file_path: str, output_html_path: str):
         # Insert before the closing tags
         html_content = html_content.replace("            </div>\n        </div>\n    \"\"\"", f"            {processing_time_stat}\n            </div>\n        </div>\n    \"\"\"")
 
-    # Sort results by score (highest first) for better viewing
-    successful_results = [r for r in results if r['success']]
-    failed_results = [r for r in results if not r['success']]
-
     # Sort successful by score (descending)
     successful_results.sort(key=lambda x: x['aesthetic_score'], reverse=True)
 
-    # Combine: successful first (high to low), then failed
-    sorted_results = successful_results + failed_results
+    # Apply filtering based on arguments
+    if top_only:
+        # Show only successful results (highest scores first)
+        sorted_results = successful_results
+        print(f"Filtering to top-scoring images only: {len(sorted_results)} results")
+    else:
+        # Combine: successful first (high to low), then failed
+        sorted_results = successful_results + failed_results
+
+    # Apply random sampling if specified
+    if sample > 0 and len(sorted_results) > sample:
+        total_count = len(sorted_results)
+        sorted_results = random.sample(sorted_results, sample)
+        print(f"Randomly sampling {sample} out of {total_count} results")
 
     # Add each image result
     for i, result in enumerate(sorted_results):
-        print(f"Processing image {i+1}/{len(results)}: {result['image_filename']}")
+        print(f"Processing image {i+1}/{len(sorted_results)}: {result['image_filename']}")
 
-        # Get image as base64
-        image_base64 = image_to_base64(result['image_path'])
+        # Copy and resize image to subfolder
+        image_rel_path = copy_and_resize_image(result['image_path'], images_folder_path, result['image_filename'])
 
         if result['success']:
             score = result['aesthetic_score']
@@ -236,8 +289,8 @@ def generate_html_visualization(json_file_path: str, output_html_path: str):
             <div class="image-container">
         """
 
-        if image_base64:
-            html_content += f'<img src="data:image/jpeg;base64,{image_base64}" alt="{result["image_filename"]}">'
+        if image_rel_path:
+            html_content += f'<img src="{image_rel_path}" alt="{result["image_filename"]}">'
         else:
             html_content += '<div style="background: #f0f0f0; height: 200px; display: flex; align-items: center; justify-content: center; color: #666;">Image not found</div>'
 
@@ -291,6 +344,17 @@ def main():
         '--labels-dir', '-d',
         help='Directory containing label JSON files (legacy option, use input_path instead)'
     )
+    parser.add_argument(
+        '--sample', '-s',
+        type=int,
+        default=500,
+        help='Number of images to randomly sample for visualization (default: 500, use 0 for no sampling)'
+    )
+    parser.add_argument(
+        '--top-only',
+        action='store_true',
+        help='Show only highest-scoring images (ignores failed results)'
+    )
     args = parser.parse_args()
 
     # Determine input source
@@ -339,7 +403,7 @@ def main():
 
     print(f"Creating HTML visualization for: {json_filename}")
 
-    generate_html_visualization(json_path, html_path)
+    generate_html_visualization(json_path, html_path, args.sample, args.top_only)
 
     print(f"\n✅ Visualization complete!")
     print(f"📁 Open in browser: {html_path}")
