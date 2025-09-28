@@ -1,4 +1,6 @@
-# Overview
+# Initial prompt
+
+## Overview
 
 I work with large collections of images from motion-triggered wildlife cameras (aka "camera traps").  A typical collection would be around 1M images.  Most images typically have no animals in them, and most of the images that have animals in them are not aesthetically pleasing: animals are often blurry, at the edge of the frame, partially obscured by vegetation, etc.
 
@@ -6,9 +8,9 @@ I would like to develop a method for automatically identifying "hero images" fro
 
 I plan to divide this project into roughly three stages: (a) candidate training image selection, (b) hybrid human/LLM labeling, (c) model training.  In the next section of this prompt, I'll discuss each of these stages.
 
-# Project stages
+## Project stages
 
-## Candidate training image selection
+### Candidate training image selection
 
 I have a virtually unlimited set of images that could be assigned aesthetic ratings, but a limited budget in time and money to label them.  And most camera trap images are not visually interesting, so randomly sampling images for labeling is not likely to be effective.  Consequently, I need to filter for images that are likely to be interesting, before proceeding to the labeling stage.  If I'm eventually going to train a supervised classifier, I also need to choose  some images that are *not* likely to be interesting.
 
@@ -23,7 +25,7 @@ I am somewhat inclined to start with the heuristic approach for today, but I wou
 We can assume that any system using this model would also have access to object detection results that can be used to eliminate blank images and images of people, so it's probably not necessary to include empty images (i.e., images with no animals) in the training data.  I am interested in your opinion on whether there's any benefit to showing a model that these are "boring", even if it's not likely to see empty images in real inference scenarios.
 
 
-## Hybrid human/LLM labeling
+### Hybrid human/LLM labeling
 
 Once I've selected candidates for labeling, I would like to divide the work of labeling across a human labeler (me) and a frontier model.  I have not settled on a precise task for labeling yet, but I am leaning toward something like a 0-10 quality rating, with 10 being the highest.  I would like your opinion on the framing of the labeling task.  I anticipate that I can label around 2500 images myself, and that I can pay for a frontier model to label about 2500-10000 images, depending on which model I use.
 
@@ -32,12 +34,12 @@ For the human labeling, I am comfortable using an existing tool (probably Labelm
 For the LLM labeling, I prefer to use Gemini.  I am interested in your opinions on the tradeoffs between using Gemini 2.5 Pro vs. Flash for this aesthetic rating task, or whether there are other models I should be considering.
 
 
-## Model training
+### Model training
 
 I don't have strong opinions about what model or framework to use, or whether I want to train a classifier ("good" or "bad" images) or a regressor (an aesthetic score from 0 to 10).  I don't have a strong opinion on architecture, but speed is generally not an issue, so I am inclined to use a larger architecture pretrained on ImageNet with some number of frozen layers.  I am interested in your opinions on frameworks, architectures, and tasks (i.e., classification vs. regression).
 
 
-# Implementation notes
+## Implementation notes
 
 I prefer to work in Python.
 
@@ -58,13 +60,24 @@ https://github.com/agentmorris/MegaDetector/tree/main/megadetector/api/batch_pro
 Please read the format, but I will also summarize the gist of it here: for every image in the collection, the .json results file includes a list of detections (bounding boxes) with confidence values, and for each detection, the .json results file may include a list of species classifications with confidence values.  There are a large number of low-confidence detections/classifications included in the file that are not meaningful.  A good threshold for detection results in this case is probably 0.3; a good threshold for classification results is probably 0.5.
 
 
-# Next steps
+## Next steps
 
 Please respond to the questions in this prompt on which I've asked for your opinion, then we will formulate a high-level plan and start working on the training image selection (phase I).
 
 
 
---
+# VLM prompt
+
+ Now I would like to create a script that sends the same type of query to a locally-hosted VLM, producing .json output that can be run through the same visualization script I used to visualize the Gemini output.  This computer has two RTX 4090s, so I can run a relatively large VLM, but there are some that are too large.  Latency is not a major issue, I want to use the largest model that will fit on my GPUs.  Previous research has suggested that I use Qwen2.5-VL-7B-Instruct, served via the vLLM library.  If that's too large, I might try Qwen2.5-VL-3B-Instruct.  There is some information here about using Qwen2.5-VL models with vLLM:
+
+https://docs.vllm.ai/projects/recipes/en/latest/Qwen/Qwen2.5-VL.html
+
+The general vLLM documentation is here:
+
+https://docs.vllm.ai/en/latest/
+
+
+# Notes
 
 Updated file:
 
@@ -98,5 +111,9 @@ https://github.com/agentmorris/MegaDetector/blob/main/megadetector/data_manageme
 
 Each image has a field called "seq_id", which indicates the burst (aka "sequence") that this image came from.  Revise the sampling heuristics to make sure that only one image from each burst is sampled.
 
-
 --
+
+python qwen_local_labeling.py /mnt/c/temp/hero-images/candidates/heuristics-20250923162520 --output-dir /mnt/c/temp/hero-images/labels --max-images 5
+
+python generate_label_visualization.py /mnt/c/temp/hero-images/labels/qwen_local_labels_20250927_180952.json --sort-by score
+

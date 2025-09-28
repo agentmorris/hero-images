@@ -86,7 +86,7 @@ def generate_html_visualization(json_file_path: str, output_html_path: str, samp
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Gemini Hero Image Labeling Results{display_note}</title>
+        <title>Hero Image Labeling Results{display_note}</title>
         <style>
             body {{
                 font-family: Arial, sans-serif;
@@ -206,7 +206,7 @@ def generate_html_visualization(json_file_path: str, output_html_path: str, samp
     </head>
     <body>
         <div class="header">
-            <h1>🎯 Gemini Hero Image Labeling Results</h1>
+            <h1>🎯 Hero Image Labeling Results</h1>
             <p><strong>Generated:</strong> {labeling_info['timestamp']}</p>
             <p><strong>Model:</strong> {labeling_info['model_used']}</p>
 

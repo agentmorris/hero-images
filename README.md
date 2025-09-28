@@ -1,78 +1,75 @@
-# Hero image classification project
+# Hero Image Classification Project
 
 This is an exploratory project comparing methods for identifying "hero images" from camera trap datasets, i.e., aesthetically pleasing wildlife photos.
 
 
 ## Project overview
 
-The system will process large camera trap collections to identify candidates with aesthetic appeal through a three-stage pipeline:
+The system will process large camera trap collections to identify candidates with aesthetic appeal through a two-stage pipeline:
 
-1. **Candidate selection**: Heuristic-based filtering using AI detection results to identify promising images
-2. **Labeling**: Hybrid human/LLM aesthetic rating using Gemini 2.5 Flash
-3. **Model training**: Supervised learning for automated hero image classification
+1. **Candidate selection**: Heuristic-based filtering using AI detection results (typically MegaDetector and SpeciesNet) to identify promising images
+2. **Labeling**: LLM aesthetic rating using Gemini 2.5 Flash or local VLMs
 
 
-## Production scripts
+### Scripts
 
-### Core pipeline
+- **`generate_sequence_aware_candidates_optimized.py`** - Generate candidates for labeling using heuristics
+- **`gemini_batch_labeling.py`** - Asynchronous API labeling using the Gemini batch API
+- **`vllm_local_labeling.py`** - Local VLM labeling via vLLM (supports Qwen2.5-VL and other models, no API costs)
+- **`generate_label_visualization.py`** - Create HTML visualizations compatible with all labeling results
+
+
+### Modules
 
 - **`stratified_selector_sequence_aware.py`** - Main candidate selection system with sequence awareness
-- **`generate_sequence_aware_candidates_optimized.py`** - Generate 5K candidates from full dataset
-- **`gemini_labeling_pipeline.py`** - Synchronous Gemini 2.5 Flash labeling pipeline
-- **`gemini_batch_labeling.py`** - Asynchronous batch API labeling with cost optimization
-- **`generate_label_visualization.py`** - Create HTML visualizations compatible with both sync and batch labeling results
 
-
-## Scrap/exploration scripts
-
-### Data exploration
-
-- **`explore_detection_results.py`** - Initial exploration of MegaDetector output format
-- **`analyze_detection_format.py`** - Parse detection JSON structure (initial version)
-- **`analyze_detection_format_fixed.py`** - Fixed detection format analysis
-- **`get_species_distribution.py`** - Comprehensive dataset statistics and species analysis
-- **`verify_image_paths.py`** - Verify detection results match actual image files
-
-### Candidate selection evolution
-
-- **`candidate_selector.py`** - Original heuristic selector (pre-sequence-aware)
-- **`stratified_selector.py`** - Early stratified sampling approach
-- **`stratified_selector_improved.py`** - Improved size scoring with Gaussian distribution
-- **`stratified_selector_training.py`** - Training-oriented version with negative examples
-- **`test_candidate_selection.py`** - Test original candidate selection system
-
-### Generation scripts (development)
-
-- **`generate_candidates.py`** - Early candidate generation script
-- **`generate_candidates_incremental.py`** - Incremental processing version
-- **`generate_full_candidates.py`** - Full dataset processing (pre-sequence-aware)
-- **`generate_test_candidates.py`** - Generate small test batches for validation
 
 
 ## Usage
 
-### 1. Setup
+### Setup
+
+**For Gemini labeling**
 
 ```bash
 pip install -r requirements.txt
 echo "your-gemini-api-key" > GEMINI_API_KEY.txt
 ```
 
-### 2. Generate candidates (if needed)
+**For local VLM labeling**
+
+```bash
+pip install -r requirements.txt
+pip install vllm
+```
+
+### Select candidates for LLM labeling
 
 ```bash
 python3 generate_sequence_aware_candidates_optimized.py
 ```
 
-### 3. Label images
+### Label images
 
-**Option A: Synchronous (immediate results)**
+** Local VLM **
 
 ```bash
-python gemini_labeling_pipeline.py /path/to/candidates --output-dir /path/to/output
+# Check GPU memory and get setup instructions
+python vllm_local_labeling.py --setup-help
+
+# Start vLLM server (example for dual RTX 4090)
+vllm serve Qwen/Qwen2.5-VL-7B-Instruct \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --data-parallel-size 2 \
+  --gpu-memory-utilization 0.9 \
+  --max-model-len 60000
+
+# Run labeling (in another terminal)
+python vllm_local_labeling.py /path/to/candidates --output-dir /path/to/output
 ```
 
-**Option B: Batch API (50% cheaper, asynchronous)**
+** Gemini Batch API **
 
 ```bash
 python gemini_batch_labeling.py /path/to/candidates --output-dir /path/to/output
@@ -82,10 +79,11 @@ python gemini_batch_labeling.py /path/to/candidates --output-dir /path/to/output
 
 ```bash
 python generate_label_visualization.py /path/to/gemini_batch_labels_20250923_143022.json
+python generate_label_visualization.py /path/to/vllm_local_labels_20250927_143022.json
 ```
 
 
-## Batch job management
+## Gemini batch job management
 
 ### Cancel a running job
 
@@ -96,7 +94,7 @@ If you need to stop a batch job (e.g., if it's taking too long or you made an er
 python gemini_batch_labeling.py --cancel batches/xyz789
 ```
 
-**Important**: Ctrl+C only stops the local script - the job continues running on Google's servers until cancelled.
+Ctrl+C only stops the local script - the job continues running on Google's servers until cancelled.
 
 ### Resume jobs (running or completed)
 
@@ -116,27 +114,35 @@ Resume behavior:
 ## Data pipeline
 
 ```
-Raw Images
+Raw images
     ↓ (MegaDetector + SpeciesNet)
 Detection and classification results
-    ↓ (Sequence-Aware Stratified Sampling)
-Candidates (5K diverse images)
-    ↓ (Gemini 2.5 Flash Labeling)
-Labeled Dataset (0-10 aesthetic scores)
-    ↓ (Future: Model Training)
-Hero Image Classifier
+    ↓ (Sequence-aware stratified sampling)
+Candidates (N diverse images)
+    ↓ (Gemini 2.5 Flash or Local VLM Labeling)
+Labeled dataset (0-10 aesthetic scores)
 ```
+
+
+## Cost and performance comparison
+
+| Method | Cost | Speed | GPU Required | Quality |
+|--------|------|-------|--------------|---------|
+| **Local VLM (Qwen2.5-VL-7B)** | Free | ~2-5s per image | Yes (24GB+ VRAM) | High |
+| **Gemini Batch API** | ~$0.003 per image | Async (hours) | No | High |
+| **Gemini Sync API** | ~$0.006 per image | ~1-2s per image | No | High |
 
 
 ## Future work
 
-- **Model training**: Train CNN classifier on labeled dataset
-- **VLM integration**: Add open-weights VLM candidate selection
+- **Heuristic improvement**: Revisit sampling heuristics, which were originally designed to get a range of image quality for training, but I'm using the pipeline now with the intention of just finding good images
+- **Prompt engineering**: Try a variety of prompts, consider few-shot training, add more wildlife-specific criteria (e.g. "eye contact with camera", "different species interacting", etc.)
+- **VLM comparison**: Compare quality between Gemini models and local VLMs, e.g. highlighting images with significant disagreement
 - **Human labeling**: Implement Labelme integration for human validation
-- **Production deployment**: Scale to operational camera trap processing
+- **Production deployment**: Scale to operational camera trap processing, e.g. include checkpoints to handle the case where large jobs are interrupted
 
+## Technical notes
 
-## Cost optimization
-
-- **Image resizing**: 768px max dimension
-- **Batch processing**: 50% cost reduction vs synchronous API calls
+- **Image preprocessing**: All methods resize to 768px max dimension
+- **Output compatibility**: All labeling scripts produce identical JSON format for visualization
+- **GPU requirements**: Local VLM requires ~20-30GB VRAM for 7B model, 10-15GB for 3B model
