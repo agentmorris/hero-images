@@ -1,0 +1,462 @@
+"""
+Local VLM Labeling Script for Hero Images via Ollama
+
+This script processes camera trap images using a locally-hosted vision-language model
+via Ollama, producing JSON output compatible with the existing visualization pipeline.
+Defaults to Gemma 3 12B but supports any Ollama vision model.
+
+Prerequisites:
+1. Install Ollama:
+   curl -fsSL https://ollama.com/install.sh | sh
+
+2. Pull a vision-language model:
+   ollama pull gemma3:12b
+
+Usage:
+    python ollama_local_labeling.py <candidates_directory> --output-dir <output_dir>
+    python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/results --max-images 10
+"""
+
+import json
+import os
+import time
+import base64
+from typing import List, Dict, Any, Optional
+from dataclasses import dataclass
+from PIL import Image
+import io
+import requests
+from datetime import datetime
+import sys
+import argparse
+
+
+class ImageProcessor:
+    """Handles image loading and encoding for VLM."""
+
+    @staticmethod
+    def resize_image_to_768_long_side(image_path: str) -> str:
+        """Resize image and return base64 encoded string."""
+        try:
+            with Image.open(image_path) as img:
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+
+                width, height = img.size
+
+                # Resize to 768px on long side (matching Gemini script)
+                if width > height:
+                    new_width = 768
+                    new_height = int((height * 768) / width)
+                else:
+                    new_height = 768
+                    new_width = int((width * 768) / height)
+
+                resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+                img_byte_arr = io.BytesIO()
+                resized_img.save(img_byte_arr, format='JPEG', quality=85, optimize=True)
+
+                # Return base64 encoded string
+                return base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
+
+        except Exception as e:
+            raise Exception(f"Failed to process image {image_path}: {str(e)}")
+
+
+class OllamaProcessor:
+    """Handles VLM inference via Ollama server."""
+
+    def __init__(self, server_url: str = "http://localhost:11434", model_name: str = "gemma3:12b"):
+        """Initialize with Ollama server URL and model name."""
+        self.server_url = server_url
+        self.model_name = model_name
+
+        # Create the aesthetic rating prompt (same as vLLM script)
+        self.prompt = """You are an expert wildlife photography curator evaluating camera trap images for aesthetic appeal.
+
+Rate this image on a scale of 0-10 for its potential as a "hero image" - meaning how visually compelling and aesthetically pleasing it would be to a general audience.
+
+Consider these factors:
+- Animal positioning and framing (centered, well-composed vs. edge-cropped or partially obscured)
+- Image clarity and focus (sharp vs. blurry)
+- Lighting quality (well-lit vs. too dark/bright/harsh shadows)
+- Animal behavior and pose (interesting/natural vs. awkward/unnatural)
+- Overall visual appeal (would this catch someone's attention?)
+
+Rating scale:
+- 0-2: Poor (blurry, poorly framed, or not visually appealing)
+- 3-4: Below average (some issues with composition, lighting, or clarity)
+- 5-6: Average (acceptable but unremarkable)
+- 7-8: Good (well-composed, clear, visually appealing)
+- 9-10: Excellent (exceptional composition, lighting, and visual impact)
+
+Respond with ONLY a JSON object in this exact format:
+{
+  "score": [number from 0-10],
+  "reasoning": "[2-3 sentence explanation of the score]",
+  "image_filename": "[the filename of the image you are analyzing]"
+}
+
+Do not include any text before or after the JSON."""
+
+    def check_server_health(self) -> bool:
+        """Check if Ollama server is running and responsive."""
+        try:
+            response = requests.get(f"{self.server_url}/api/tags", timeout=5)
+            if response.status_code == 200:
+                print(f"✅ Ollama server is running at {self.server_url}")
+                return True
+            else:
+                print(f"❌ Ollama server returned status {response.status_code}")
+                return False
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Could not connect to Ollama server at {self.server_url}: {e}")
+            return False
+
+    def check_model_available(self) -> bool:
+        """Check if the specified model is available."""
+        try:
+            response = requests.get(f"{self.server_url}/api/tags", timeout=10)
+            if response.status_code == 200:
+                models_data = response.json()
+                available_models = [model['name'] for model in models_data.get('models', [])]
+
+                # Check if our model is in the list (handle version tags)
+                model_available = any(self.model_name in model for model in available_models)
+
+                if model_available:
+                    print(f"✅ Model {self.model_name} is available")
+                    return True
+                else:
+                    print(f"❌ Model {self.model_name} not found")
+                    print(f"Available models: {', '.join(available_models)}")
+                    print(f"\nTo install the model, run: ollama pull {self.model_name}")
+                    return False
+            return False
+        except Exception as e:
+            print(f"⚠️  Could not check available models: {e}")
+            return False
+
+    def label_image(self, image_path: str) -> Dict[str, Any]:
+        """
+        Send image to Ollama server for labeling.
+
+        Returns:
+            Dictionary with labeling results
+        """
+        try:
+            # Process image
+            image_b64 = ImageProcessor.resize_image_to_768_long_side(image_path)
+            filename = os.path.basename(image_path)
+
+            # Create custom prompt with filename
+            custom_prompt = self.prompt + f"\n\nNote: You are analyzing the image file named '{filename}'. Please include this exact filename in the image_filename field of your JSON response."
+
+            # Prepare request for Ollama API
+            payload = {
+                "model": self.model_name,
+                "prompt": custom_prompt,
+                "images": [image_b64],
+                "stream": False,
+                "options": {
+                    "temperature": 0.1,
+                    "num_predict": 300
+                }
+            }
+
+            # Send request
+            response = requests.post(
+                f"{self.server_url}/api/generate",
+                json=payload,
+                timeout=60
+            )
+
+            if response.status_code != 200:
+                return {
+                    'image_path': image_path,
+                    'image_filename': filename,
+                    'success': False,
+                    'error': f"HTTP {response.status_code}: {response.text}"
+                }
+
+            # Parse response
+            response_data = response.json()
+
+            if 'response' not in response_data:
+                return {
+                    'image_path': image_path,
+                    'image_filename': filename,
+                    'success': False,
+                    'error': "No response field in Ollama response"
+                }
+
+            content = response_data['response'].strip()
+
+            # Parse JSON response (handle markdown formatting)
+            if content.startswith('```json'):
+                content = content[7:]
+            if content.endswith('```'):
+                content = content[:-3]
+            content = content.strip()
+
+            try:
+                result_json = json.loads(content)
+
+                return {
+                    'image_path': image_path,
+                    'image_filename': filename,
+                    'aesthetic_score': float(result_json.get('score', 0)),
+                    'reasoning': result_json.get('reasoning', 'No reasoning provided'),
+                    'success': True
+                }
+
+            except json.JSONDecodeError as e:
+                return {
+                    'image_path': image_path,
+                    'image_filename': filename,
+                    'success': False,
+                    'error': f"Failed to parse JSON response: {e}. Raw content: {content[:200]}..."
+                }
+
+        except Exception as e:
+            return {
+                'image_path': image_path,
+                'image_filename': filename,
+                'success': False,
+                'error': str(e)
+            }
+
+    def process_images(self, image_paths: List[str], progress_callback=None) -> List[Dict[str, Any]]:
+        """Process multiple images with progress tracking."""
+        results = []
+        total = len(image_paths)
+
+        print(f"Processing {total} images...")
+
+        for i, image_path in enumerate(image_paths):
+            if progress_callback:
+                progress_callback(i, total)
+
+            result = self.label_image(image_path)
+            results.append(result)
+
+            # Progress update
+            if (i + 1) % 10 == 0 or i == total - 1:
+                successful = len([r for r in results if r['success']])
+                print(f"  Processed {i + 1}/{total} images ({successful} successful)")
+
+        return results
+
+    def save_results(self, results: List[Dict[str, Any]], output_path: str):
+        """Save results in format compatible with existing visualization."""
+        successful_results = [r for r in results if r['success']]
+        failed_results = [r for r in results if not r['success']]
+
+        if successful_results:
+            scores = [r['aesthetic_score'] for r in successful_results]
+            avg_score = sum(scores) / len(scores)
+            min_score = min(scores)
+            max_score = max(scores)
+        else:
+            avg_score = min_score = max_score = 0.0
+
+        output_data = {
+            'labeling_info': {
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'model_used': self.model_name,
+                'processing_method': 'local_ollama',
+                'server_url': self.server_url,
+                'total_images': len(results),
+                'successful_labels': len(successful_results),
+                'failed_labels': len(failed_results),
+                'success_rate': len(successful_results) / len(results) * 100 if results else 0,
+                'statistics': {
+                    'avg_score': avg_score,
+                    'min_score': min_score,
+                    'max_score': max_score
+                }
+            },
+            'results': results
+        }
+
+        with open(output_path, 'w') as f:
+            json.dump(output_data, f, indent=2)
+
+        print(f"✅ Results saved to: {output_path}")
+        return output_path
+
+
+def print_setup_instructions():
+    """Print setup instructions for Ollama server."""
+    print("\n📋 Setup Instructions:")
+    print("1. Install Ollama:")
+    print("   curl -fsSL https://ollama.com/install.sh | sh")
+    print("\n2. Start Ollama service:")
+    print("   ollama serve")
+    print("\n3. Pull a vision model:")
+    print("   ollama pull gemma3:12b")
+    print("   # or try: ollama pull llava:13b")
+    print("\n4. Run this script")
+
+
+def main():
+    """Main processing workflow."""
+
+    parser = argparse.ArgumentParser(
+        description="Local VLM Hero Image Labeling via Ollama",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Test with 5 images
+  python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output --max-images 5
+
+  # Process full dataset
+  python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output
+
+  # Use different model
+  python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output --model llava:13b
+
+  # Check setup instructions
+  python ollama_local_labeling.py --setup-help
+        """
+    )
+
+    parser.add_argument(
+        'candidates_dir',
+        nargs='?',
+        help='Directory containing candidate images to label'
+    )
+    parser.add_argument(
+        '--output-dir', '-o',
+        help='Output directory for results'
+    )
+    parser.add_argument(
+        '--max-images', '-n',
+        type=int,
+        help='Maximum number of images to process (for testing)'
+    )
+    parser.add_argument(
+        '--server-url',
+        default='http://localhost:11434',
+        help='Ollama server URL (default: http://localhost:11434)'
+    )
+    parser.add_argument(
+        '--model', '-m',
+        default='gemma3:12b',
+        help='Model name to use (default: gemma3:12b)'
+    )
+    parser.add_argument(
+        '--setup-help',
+        action='store_true',
+        help='Show setup instructions and exit'
+    )
+
+    args = parser.parse_args()
+
+    print("=== Local VLM Hero Image Labeling via Ollama ===")
+
+    # Show setup help if requested
+    if args.setup_help:
+        print_setup_instructions()
+        return
+
+    # Validate arguments
+    if not args.candidates_dir:
+        print("❌ Error: candidates_dir is required (use --setup-help for setup instructions)")
+        sys.exit(1)
+
+    if not args.output_dir:
+        print("❌ Error: --output-dir is required")
+        sys.exit(1)
+
+    if not os.path.exists(args.candidates_dir):
+        print(f"❌ Error: Candidates directory does not exist: {args.candidates_dir}")
+        sys.exit(1)
+
+    try:
+        # Initialize processor
+        processor = OllamaProcessor(args.server_url, args.model)
+
+        # Check server health
+        print("\n1. Checking Ollama server...")
+        if not processor.check_server_health():
+            print("\n💡 It looks like the Ollama server is not running.")
+            print_setup_instructions()
+            sys.exit(1)
+
+        # Check model availability
+        print(f"\n2. Checking model {args.model}...")
+        if not processor.check_model_available():
+            sys.exit(1)
+
+        # Get image files
+        print("\n3. Finding candidate images...")
+        image_files = []
+        for filename in os.listdir(args.candidates_dir):
+            if filename.lower().endswith(('.jpg', '.jpeg', '.png')):
+                full_path = os.path.join(args.candidates_dir, filename)
+                image_files.append(full_path)
+
+        image_files.sort()
+
+        # Limit number of images if specified
+        if args.max_images:
+            image_files = image_files[:args.max_images]
+            print(f"✅ Found {len(image_files)} images to process (limited to {args.max_images})")
+        else:
+            print(f"✅ Found {len(image_files)} images to process")
+
+        if not image_files:
+            print("❌ No images found!")
+            return
+
+        # Ensure output directory exists
+        os.makedirs(args.output_dir, exist_ok=True)
+
+        # Process images
+        print(f"\n4. Processing images...")
+        start_time = time.time()
+
+        results = processor.process_images(image_files)
+
+        processing_time = time.time() - start_time
+
+        # Save results
+        print(f"\n5. Saving results...")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_filename = f"ollama_local_labels_{timestamp}.json"
+        output_path = os.path.join(args.output_dir, output_filename)
+
+        processor.save_results(results, output_path)
+
+        # Summary
+        successful = len([r for r in results if r['success']])
+        failed = len([r for r in results if not r['success']])
+
+        print(f"\n🎉 Ollama labeling complete!")
+        print(f"✅ Processed: {len(results)} images")
+        print(f"✅ Successful: {successful}")
+        print(f"❌ Failed: {failed}")
+        print(f"⏱️  Processing time: {processing_time:.1f}s ({processing_time/len(image_files):.1f}s per image)")
+        print(f"📁 Results: {output_path}")
+
+        if successful > 0:
+            scores = [r['aesthetic_score'] for r in results if r['success']]
+            print(f"📊 Score range: {min(scores):.1f} - {max(scores):.1f}")
+            print(f"📊 Average score: {sum(scores)/len(scores):.1f}")
+
+        if failed > 0:
+            print(f"\n⚠️  {failed} images failed to process. Check the output file for error details.")
+
+    except KeyboardInterrupt:
+        print(f"\n⚠️  Process interrupted by user")
+        sys.exit(1)
+
+    except Exception as e:
+        print(f"\n❌ Error: {str(e)}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

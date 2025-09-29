@@ -7,7 +7,7 @@ import json
 import os
 import base64
 import random
-from typing import Dict, Any
+from typing import Dict, Any, List, Union
 
 
 def copy_and_resize_image(source_path: str, output_folder: str, filename: str, max_size: int = 400) -> str:
@@ -46,7 +46,40 @@ def copy_and_resize_image(source_path: str, output_folder: str, filename: str, m
         return ""
 
 
-def generate_html_visualization(json_file_path: str, output_html_path: str, sample: int = 500, top_only: bool = False, sort_by: str = 'filename'):
+def get_sample_filenames(sample_from: Union[str, List[str]], sample: int, random_seed: int) -> List[str]:
+    """Get a fixed list of filenames to sample from."""
+    if isinstance(sample_from, str):
+        if os.path.isdir(sample_from):
+            # Directory: get all image files
+            filenames = []
+            for f in os.listdir(sample_from):
+                if f.lower().endswith(('.jpg', '.jpeg', '.png')):
+                    filenames.append(f)
+        elif os.path.isfile(sample_from) and sample_from.endswith('.json'):
+            # JSON file: extract filenames
+            with open(sample_from, 'r') as f:
+                data = json.load(f)
+            filenames = [r['image_filename'] for r in data['results']]
+        else:
+            raise ValueError(f"sample_from must be a directory or JSON file: {sample_from}")
+    else:
+        # List of files
+        filenames = [os.path.basename(f) for f in sample_from]
+
+    # Sort for consistency
+    filenames.sort()
+
+    # Apply sampling with fixed random seed
+    if sample > 0 and len(filenames) > sample:
+        random.seed(random_seed)
+        filenames = random.sample(filenames, sample)
+        # Re-sort after sampling for consistent ordering
+        filenames.sort()
+
+    return filenames
+
+
+def generate_html_visualization(json_file_path: str, output_html_path: str, sample: int = 500, top_only: bool = False, sort_by: str = 'filename', random_seed: int = 0, sample_from: Union[str, List[str], None] = None):
     """Generate HTML file showing images with their Gemini ratings."""
 
     print(f"Loading results from {json_file_path}...")
@@ -59,6 +92,34 @@ def generate_html_visualization(json_file_path: str, output_html_path: str, samp
     results = data['results']
 
     print(f"Found {len(results)} labeled images")
+
+    # If sample_from is specified, filter results to only include those filenames
+    if sample_from is not None:
+        target_filenames = get_sample_filenames(sample_from, sample, random_seed)
+        print(f"Filtering to {len(target_filenames)} target filenames from sample_from")
+
+        # Create a lookup for existing results
+        results_by_filename = {r['image_filename']: r for r in results}
+
+        # Create new results list with target filenames
+        filtered_results = []
+        for filename in target_filenames:
+            if filename in results_by_filename:
+                filtered_results.append(results_by_filename[filename])
+            else:
+                # Create a "missing" result entry
+                filtered_results.append({
+                    'image_filename': filename,
+                    'image_path': '',  # Unknown path
+                    'success': False,
+                    'error': f'No results available for this image in {os.path.basename(json_file_path)}',
+                    'aesthetic_score': 0,
+                    'reasoning': f'Image not found in {labeling_info.get("model_used", "this model")} results'
+                })
+
+        results = filtered_results
+        sample = 0  # Don't apply additional sampling since we already filtered
+        print(f"After filtering: {len(results)} results ({len([r for r in results if r['success']])} successful, {len([r for r in results if not r['success']])} missing/failed)")
 
     # Create image subfolder
     html_basename = os.path.splitext(os.path.basename(output_html_path))[0]
@@ -193,6 +254,14 @@ def generate_html_visualization(json_file_path: str, output_html_path: str, samp
                 background: #e74c3c;
                 font-size: 24px;
             }}
+            .missing {{
+                background: #f8f9fa;
+                border-left-color: #95a5a6;
+            }}
+            .missing .score {{
+                background: #95a5a6;
+                font-size: 18px;
+            }}
             .error-message {{
                 color: #c0392b;
                 font-style: italic;
@@ -264,11 +333,13 @@ def generate_html_visualization(json_file_path: str, output_html_path: str, samp
         # Combine: successful first, then failed (both sorted according to sort_by preference)
         sorted_results = successful_results + failed_results
 
-    # Apply random sampling if specified
-    if sample > 0 and len(sorted_results) > sample:
+    # Apply random sampling if specified (only if sample_from wasn't used)
+    if sample > 0 and len(sorted_results) > sample and sample_from is None:
+        # Set random seed for reproducible sampling
+        random.seed(random_seed)
         total_count = len(sorted_results)
         sorted_results = random.sample(sorted_results, sample)
-        print(f"Randomly sampling {sample} out of {total_count} results")
+        print(f"Randomly sampling {sample} out of {total_count} results (seed: {random_seed})")
 
         # Re-apply sorting to the sampled results
         if sort_by == 'score':
@@ -298,9 +369,14 @@ def generate_html_visualization(json_file_path: str, output_html_path: str, samp
             additional_class = ""
         else:
             score_class = "score-0"
-            score_display = "FAILED"
-            reasoning = result.get('error_message', 'Processing failed')
-            additional_class = "failed"
+            if 'error' in result:
+                score_display = "NOT AVAILABLE"
+                reasoning = result['error']
+                additional_class = "missing"
+            else:
+                score_display = "FAILED"
+                reasoning = result.get('error_message', 'Processing failed')
+                additional_class = "failed"
 
         processing_time = result.get('processing_time', 0.0)
 
@@ -324,6 +400,8 @@ def generate_html_visualization(json_file_path: str, output_html_path: str, samp
 
         if result['success']:
             html_content += f"<strong>Reasoning:</strong><br>{reasoning}"
+        elif 'error' in result:
+            html_content += f'<strong>Missing:</strong><br><span class="error-message">{reasoning}</span>'
         else:
             html_content += f'<strong>Error:</strong><br><span class="error-message">{reasoning}</span>'
 
@@ -381,6 +459,16 @@ def main():
         default='filename',
         help='Sort results by filename (default) or score (highest to lowest)'
     )
+    parser.add_argument(
+        '--random-seed',
+        type=int,
+        default=0,
+        help='Random seed for reproducible sampling (default: 0)'
+    )
+    parser.add_argument(
+        '--sample-from',
+        help='Directory or JSON file to sample filenames from (for consistent comparison across models)'
+    )
     args = parser.parse_args()
 
     # Determine input source
@@ -429,7 +517,7 @@ def main():
 
     print(f"Creating HTML visualization for: {json_filename}")
 
-    generate_html_visualization(json_path, html_path, args.sample, args.top_only, args.sort_by)
+    generate_html_visualization(json_path, html_path, args.sample, args.top_only, args.sort_by, args.random_seed, args.sample_from)
 
     print(f"\n✅ Visualization complete!")
     print(f"📁 Open in browser: {html_path}")
