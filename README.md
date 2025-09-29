@@ -1,4 +1,4 @@
-# Hero Image Classification Project
+# Finding "hero images" in camera trap image collections
 
 This is an exploratory project comparing methods for identifying "hero images" from camera trap datasets, i.e., aesthetically pleasing wildlife photos.
 
@@ -119,8 +119,14 @@ ollama serve
 # Pull vision model (in another terminal)
 ollama pull gemma3:12b
 
-# Run labeling
+# Run labeling (with automatic checkpointing every 1000 images)
 python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output
+
+# Resume from checkpoint if interrupted
+python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output --resume /path/to/output/ollama_local_labels_YYYYMMDD_HHMMSS.tmp.json
+
+# Disable checkpointing for short jobs
+python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output --checkpoint-interval 0
 ```
 
 Alternative models to try:
@@ -157,6 +163,14 @@ CUDA_VISIBLE_DEVICES=1 OLLAMA_HOST=localhost:11435 ollama serve
 * List models with `ollama list`
 
 * Remove models with `ollama rm`
+
+#### Checkpoint/resume options for both local VLM labeling Scripts
+
+- `--checkpoint-interval N` - Save progress every N images (default: 1000, use 0 to disable)
+- `--resume FILE.tmp.json` - Resume from specific checkpoint file
+- Checkpoint files are automatically cleaned up on successful completion
+- If process crashes, resume with `--resume /path/to/output/filename.tmp.json`
+
 
 ### Visualize results
 

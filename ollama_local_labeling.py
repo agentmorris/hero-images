@@ -248,6 +248,58 @@ Do not include any text before or after the JSON."""
 
         return results
 
+    def save_checkpoint(self, results: List[Dict[str, Any]], checkpoint_path: str):
+        """Save checkpoint file with atomic write."""
+        successful_results = [r for r in results if r['success']]
+        failed_results = [r for r in results if not r['success']]
+
+        if successful_results:
+            scores = [r['aesthetic_score'] for r in successful_results]
+            avg_score = sum(scores) / len(scores)
+            min_score = min(scores)
+            max_score = max(scores)
+        else:
+            avg_score = min_score = max_score = 0.0
+
+        checkpoint_data = {
+            'checkpoint_info': {
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'model_used': self.model_name,
+                'processing_method': 'local_ollama',
+                'server_url': self.server_url,
+                'total_images': len(results),
+                'successful_labels': len(successful_results),
+                'failed_labels': len(failed_results),
+                'success_rate': len(successful_results) / len(results) * 100 if results else 0,
+                'statistics': {
+                    'avg_score': avg_score,
+                    'min_score': min_score,
+                    'max_score': max_score
+                },
+                'is_checkpoint': True
+            },
+            'results': results
+        }
+
+        # Atomic write: write to backup file first, then rename
+        backup_path = checkpoint_path.replace('.tmp.json', '.bk.tmp.json')
+        try:
+            with open(backup_path, 'w') as f:
+                json.dump(checkpoint_data, f, indent=2)
+
+            # Remove old checkpoint if it exists
+            if os.path.exists(checkpoint_path):
+                os.remove(checkpoint_path)
+
+            # Rename backup to checkpoint
+            os.rename(backup_path, checkpoint_path)
+
+        except Exception as e:
+            # Clean up backup file if something went wrong
+            if os.path.exists(backup_path):
+                os.remove(backup_path)
+            raise e
+
     def save_results(self, results: List[Dict[str, Any]], output_path: str):
         """Save results in format compatible with existing visualization."""
         successful_results = [r for r in results if r['success']]
@@ -287,6 +339,24 @@ Do not include any text before or after the JSON."""
         return output_path
 
 
+def load_checkpoint(checkpoint_path: str) -> List[Dict[str, Any]]:
+    """Load results from a checkpoint file."""
+    try:
+        with open(checkpoint_path, 'r') as f:
+            data = json.load(f)
+
+        if 'results' in data:
+            print(f"✅ Loaded {len(data['results'])} results from checkpoint")
+            return data['results']
+        else:
+            print("⚠️  Checkpoint file format not recognized, starting fresh")
+            return []
+    except Exception as e:
+        print(f"❌ Error loading checkpoint: {e}")
+        print("Starting fresh...")
+        return []
+
+
 def print_setup_instructions():
     """Print setup instructions for Ollama server."""
     print("\n📋 Setup Instructions:")
@@ -311,11 +381,17 @@ Examples:
   # Test with 5 images
   python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output --max-images 5
 
-  # Process full dataset
+  # Process full dataset with checkpointing
   python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output
 
-  # Use different model
-  python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output --model llava:13b
+  # Resume from checkpoint
+  python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output --resume /path/to/checkpoint.tmp.json
+
+  # Disable checkpointing
+  python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output --checkpoint-interval 0
+
+  # Use different model with custom checkpoint interval
+  python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output --model llava:13b --checkpoint-interval 500
 
   # Check setup instructions
   python ollama_local_labeling.py --setup-help
@@ -350,6 +426,16 @@ Examples:
         '--setup-help',
         action='store_true',
         help='Show setup instructions and exit'
+    )
+    parser.add_argument(
+        '--checkpoint-interval',
+        type=int,
+        default=1000,
+        help='Save checkpoint every N images (default: 1000, use 0 to disable)'
+    )
+    parser.add_argument(
+        '--resume',
+        help='Resume from a checkpoint file (path to .tmp.json file)'
     )
 
     args = parser.parse_args()
@@ -414,35 +500,101 @@ Examples:
         # Ensure output directory exists
         os.makedirs(args.output_dir, exist_ok=True)
 
-        # Process images
-        print(f"\n4. Processing images...")
-        start_time = time.time()
-
-        results = processor.process_images(image_files)
-
-        processing_time = time.time() - start_time
-
-        # Save results
-        print(f"\n5. Saving results...")
+        # Handle resume logic
+        existing_results = []
+        processed_filenames = set()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_filename = f"ollama_local_labels_{timestamp}.json"
         output_path = os.path.join(args.output_dir, output_filename)
+        checkpoint_path = output_path.replace('.json', '.tmp.json')
 
-        processor.save_results(results, output_path)
+        if args.resume:
+            if not os.path.exists(args.resume):
+                print(f"❌ Error: Checkpoint file does not exist: {args.resume}")
+                sys.exit(1)
+
+            print(f"\n4. Loading checkpoint from {args.resume}...")
+            existing_results = load_checkpoint(args.resume)
+            processed_filenames = {r['image_filename'] for r in existing_results}
+
+            # Use the same timestamp/naming as the checkpoint for consistency
+            checkpoint_basename = os.path.basename(args.resume)
+            if checkpoint_basename.endswith('.tmp.json'):
+                output_filename = checkpoint_basename.replace('.tmp.json', '.json')
+                output_path = os.path.join(args.output_dir, output_filename)
+                checkpoint_path = args.resume  # Continue using the same checkpoint file
+
+        # Filter images to only process those not already completed
+        images_to_process = []
+        for image_path in image_files:
+            filename = os.path.basename(image_path)
+            if filename not in processed_filenames:
+                images_to_process.append(image_path)
+
+        print(f"\n5. Processing images...")
+        if args.resume:
+            print(f"📥 Resuming: {len(existing_results)} already processed, {len(images_to_process)} remaining")
+        else:
+            print(f"🆕 Starting fresh: {len(images_to_process)} images to process")
+
+        if not images_to_process:
+            print("✅ All images already processed!")
+            final_results = existing_results
+        else:
+            start_time = time.time()
+
+            # Process remaining images with checkpointing
+            new_results = []
+            all_results = existing_results.copy()
+
+            for i, image_path in enumerate(images_to_process):
+                result = processor.label_image(image_path)
+                new_results.append(result)
+                all_results.append(result)
+
+                # Progress update
+                if (i + 1) % 10 == 0 or i == len(images_to_process) - 1:
+                    successful = len([r for r in new_results if r['success']])
+                    print(f"  Processed {i + 1}/{len(images_to_process)} new images ({successful} successful)")
+
+                # Save checkpoint periodically
+                if args.checkpoint_interval > 0 and (i + 1) % args.checkpoint_interval == 0:
+                    print(f"💾 Saving checkpoint after {len(all_results)} total images...")
+                    processor.save_checkpoint(all_results, checkpoint_path)
+
+            processing_time = time.time() - start_time
+            final_results = all_results
+
+        # Save final results
+        print(f"\n6. Saving final results...")
+        processor.save_results(final_results, output_path)
+
+        # Clean up checkpoint file on successful completion
+        if args.checkpoint_interval > 0 and os.path.exists(checkpoint_path):
+            try:
+                os.remove(checkpoint_path)
+                print(f"🧹 Cleaned up checkpoint file: {checkpoint_path}")
+            except Exception as e:
+                print(f"⚠️  Could not remove checkpoint file: {e}")
+
+        processing_time = processing_time if 'processing_time' in locals() else 0
 
         # Summary
-        successful = len([r for r in results if r['success']])
-        failed = len([r for r in results if not r['success']])
+        successful = len([r for r in final_results if r['success']])
+        failed = len([r for r in final_results if not r['success']])
 
         print(f"\n🎉 Ollama labeling complete!")
-        print(f"✅ Processed: {len(results)} images")
+        print(f"✅ Total processed: {len(final_results)} images")
         print(f"✅ Successful: {successful}")
         print(f"❌ Failed: {failed}")
-        print(f"⏱️  Processing time: {processing_time:.1f}s ({processing_time/len(image_files):.1f}s per image)")
+        if processing_time > 0:
+            images_processed = len(images_to_process) if 'images_to_process' in locals() else len(final_results)
+            if images_processed > 0:
+                print(f"⏱️  Processing time: {processing_time:.1f}s ({processing_time/images_processed:.1f}s per image)")
         print(f"📁 Results: {output_path}")
 
         if successful > 0:
-            scores = [r['aesthetic_score'] for r in results if r['success']]
+            scores = [r['aesthetic_score'] for r in final_results if r['success']]
             print(f"📊 Score range: {min(scores):.1f} - {max(scores):.1f}")
             print(f"📊 Average score: {sum(scores)/len(scores):.1f}")
 
