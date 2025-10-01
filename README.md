@@ -25,7 +25,6 @@ The system will process large camera trap collections to identify candidates wit
 - **`stratified_selector_sequence_aware.py`** - Main candidate selection system with sequence awareness
 
 
-
 ## Usage
 
 ### Setup
@@ -134,12 +133,12 @@ Alternative models to try:
 * gemma3:27b (17GB)
 * qwen2.5vl:32b (21GB)
 * llava:34b (20GB)
-* qwen2.5vl:72b (49GB)
+* qwen2.5vl:72b-instruct (49GB)
 
 For example:
 
 ```bash
-export MODEL_NAME=qwen2.5vl:72b
+export MODEL_NAME=qwen2.5vl:72b-instruct
 ollama pull ${MODEL_NAME}
 python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output --model ${MODEL_NAME}
 ```
@@ -177,23 +176,27 @@ CUDA_VISIBLE_DEVICES=1 OLLAMA_HOST=localhost:11435 ollama serve
 **Single model visualization**
 
 ```bash
-python generate_label_visualization.py /path/to/gemini_batch_labels_20250923_143022.json
-python generate_label_visualization.py /path/to/vllm_local_labels_20250927_143022.json
+python generate_label_visualization.py /path/to/batch_labels_file_name_20250923_143022.json
 ```
 
-**Side-by-side model comparison**
+**Multi-model comparison dashboard**
 
 ```bash
-# Generate visualizations for the same set of images across different models
-# Use the first result file to define the sample set
-python generate_label_visualization.py gemini_results.json --sample-from gemini_results.json --random-seed 42
-python generate_label_visualization.py ollama_results.json --sample-from gemini_results.json --random-seed 42
-python generate_label_visualization.py vllm_results.json --sample-from gemini_results.json --random-seed 42
-
-# Or sample from a directory of candidate images
-python generate_label_visualization.py model1_results.json --sample-from /path/to/candidates --sample 100 --random-seed 42
-python generate_label_visualization.py model2_results.json --sample-from /path/to/candidates --sample 100 --random-seed 42
+# Generate comparison dashboard for all models in a directory
+python generate_label_visualization.py /path/to/results_directory --sample-from /path/to/candidates --sample 100 --random-seed 42
 ```
+
+Notes to self:
+
+```bash
+python generate_label_visualization.py /mnt/c/temp/hero-images/labels/ --sample 1000 --random-seed 0 --sample-from /mnt/c/temp/hero-images/candidates/heuristics-20250923162520/
+python generate_label_visualization.py /mnt/c/temp/hero-images/labels/ --sample 1000 --random-seed 0 --sample-from /mnt/c/temp/hero-images/candidates/heuristics-20250923162520/ --sort-by score
+```
+
+This creates:
+- Individual HTML files for each *_labels_*.json file found
+- An index.YYYYMMDD_HHMMSS.html dashboard with links to all results
+- A single shared batch_labels_YYYYMMDD_HHMMSS_images/ folder
 
 **Visualization options**
 

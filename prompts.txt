@@ -117,3 +117,10 @@ python qwen_local_labeling.py /mnt/c/temp/hero-images/candidates/heuristics-2025
 
 python generate_label_visualization.py /mnt/c/temp/hero-images/labels/qwen_local_labels_20250927_180952.json --sort-by score
 
+--
+
+I used gemini_batch_labeling.py and ollama_local_labeling.py to generate several .json files for the same set of images, so I can compare them.  generate_label_visualization.py currently has an option to take a folder for the input_path argument; in this case, it just uses the most recent .json file in that folder.  I want to remove that functionality.  Instead, when a folder is provided for the input_path argument, it should find *_labels_*.json in that folder (non-recursively), and it should generate HTML pages for each of them (exactly the way the script does now), along with a new "parent" HTML file - called index.[datestamp].html - in the same folder, which contains links to each of the individual HTML files.  I will typically open those links in tabs to view results from different models side by side.  The link text for each link should reflect the model that was used to generate the corresponding .json file (you will have to read this from the .json file).  Other arguments should work the same way they do in the current script: --sample-from, --sort-by, --random-seed, --sample.  
+
+It's important that the same images be sampled for each HTML page, but I'm not worried about, e.g. corner cases where --sample-from is a folder and the set of images in that folder changes between the individual HTML generation calls.  So it's OK to make multiple calls to the existing generate_html_visualization function with the same sampling parameters.  As far as I can see, that should result in identical samples in everything but very esoteric cases.
+
+Let me know if you have any questions about this request.
