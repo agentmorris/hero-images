@@ -77,13 +77,16 @@ class ImageProcessor:
 class GeminiBatchProcessor:
     """Handles Gemini Batch API workflow."""
 
-    def __init__(self, api_key: str):
-        """Initialize with API key."""
+    def __init__(self, api_key: str, model_name: str = "gemini-2.5-flash"):
+        """Initialize with API key and model name."""
         # Configure old API for synchronous operations (if needed)
         genai.configure(api_key=api_key)
         # Initialize new batch API client
         self.client = batch_genai.Client(api_key=api_key)
-        self.model_name = "models/gemini-2.5-flash"
+        # Ensure model name starts with "models/"
+        if not model_name.startswith("models/"):
+            model_name = f"models/{model_name}"
+        self.model_name = model_name
 
         # Create the aesthetic rating prompt
         self.prompt = """You are an expert wildlife photography curator evaluating camera trap images for aesthetic appeal.
@@ -626,6 +629,16 @@ Examples:
         type=str,
         help='Retrieve results from a completed batch job by providing its name/ID'
     )
+    parser.add_argument(
+        '--recursive', '-r',
+        action='store_true',
+        help='Search for images recursively in subdirectories'
+    )
+    parser.add_argument(
+        '--model', '-m',
+        default='gemini-2.5-flash',
+        help='Gemini model name to use (default: gemini-2.5-flash). Can optionally include "models/" prefix.'
+    )
 
     args = parser.parse_args()
 
@@ -641,7 +654,7 @@ Examples:
     # Validate arguments (unless cancelling or resuming)
     if not args.cancel and not args.resume:
         if not CANDIDATES_DIR:
-            print("❌ Error: candidates_dir is required unless using --cancel or --resume")
+            parser.print_help()
             sys.exit(1)
         if not OUTPUT_DIR:
             print("❌ Error: --output-dir is required unless using --cancel or --resume with metadata file")
@@ -673,7 +686,7 @@ Examples:
 
         # Handle resume if requested
         if args.resume:
-            processor = GeminiBatchProcessor(api_key)
+            processor = GeminiBatchProcessor(api_key, args.model)
 
             # Determine if input is a batch ID or metadata file
             if args.resume.endswith('.json') and 'metadata' in args.resume:
@@ -767,15 +780,22 @@ Examples:
             return
 
         # Initialize processor
-        processor = GeminiBatchProcessor(api_key)
+        processor = GeminiBatchProcessor(api_key, args.model)
 
         # Get image files
         print("\n2. Finding candidate images...")
         image_files = []
-        for filename in os.listdir(CANDIDATES_DIR):
-            if filename.lower().endswith(('.jpg', '.jpeg', '.png')):
-                full_path = os.path.join(CANDIDATES_DIR, filename)
-                image_files.append(full_path)
+        if args.recursive:
+            for root, dirs, files in os.walk(CANDIDATES_DIR):
+                for filename in files:
+                    if filename.lower().endswith(('.jpg', '.jpeg', '.png')):
+                        full_path = os.path.join(root, filename)
+                        image_files.append(full_path)
+        else:
+            for filename in os.listdir(CANDIDATES_DIR):
+                if filename.lower().endswith(('.jpg', '.jpeg', '.png')):
+                    full_path = os.path.join(CANDIDATES_DIR, filename)
+                    image_files.append(full_path)
 
         image_files.sort()
 

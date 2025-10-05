@@ -5,6 +5,7 @@ Shows images alongside their aesthetic scores and reasoning.
 
 import json
 import os
+import sys
 import base64
 import random
 from typing import Dict, Any, List, Union
@@ -47,15 +48,21 @@ def copy_and_resize_image(source_path: str, output_folder: str, filename: str, m
         return ""
 
 
-def get_sample_filenames(sample_from: Union[str, List[str]], sample: int, random_seed: int) -> List[str]:
+def get_sample_filenames(sample_from: Union[str, List[str]], sample: int, random_seed: int, recursive: bool = False) -> List[str]:
     """Get a fixed list of filenames to sample from."""
     if isinstance(sample_from, str):
         if os.path.isdir(sample_from):
             # Directory: get all image files
             filenames = []
-            for f in os.listdir(sample_from):
-                if f.lower().endswith(('.jpg', '.jpeg', '.png')):
-                    filenames.append(f)
+            if recursive:
+                for root, dirs, files in os.walk(sample_from):
+                    for f in files:
+                        if f.lower().endswith(('.jpg', '.jpeg', '.png')):
+                            filenames.append(f)
+            else:
+                for f in os.listdir(sample_from):
+                    if f.lower().endswith(('.jpg', '.jpeg', '.png')):
+                        filenames.append(f)
         elif os.path.isfile(sample_from) and sample_from.endswith('.json'):
             # JSON file: extract filenames
             with open(sample_from, 'r') as f:
@@ -80,7 +87,7 @@ def get_sample_filenames(sample_from: Union[str, List[str]], sample: int, random
     return filenames
 
 
-def generate_html_visualization_with_shared_images(json_file_path: str, output_html_path: str, shared_images_path: str, shared_images_folder: str, sample: int = 500, top_only: bool = False, sort_by: str = 'filename', random_seed: int = 0, sample_from: Union[str, List[str], None] = None, create_images: bool = True):
+def generate_html_visualization_with_shared_images(json_file_path: str, output_html_path: str, shared_images_path: str, shared_images_folder: str, sample: int = 500, top_only: bool = False, sort_by: str = 'filename', random_seed: int = 0, sample_from: Union[str, List[str], None] = None, create_images: bool = True, recursive: bool = False):
     """Generate HTML file using a shared images folder for efficiency."""
 
     print(f"Loading results from {json_file_path}...")
@@ -96,7 +103,7 @@ def generate_html_visualization_with_shared_images(json_file_path: str, output_h
 
     # If sample_from is specified, filter results to only include those filenames
     if sample_from is not None:
-        target_filenames = get_sample_filenames(sample_from, sample, random_seed)
+        target_filenames = get_sample_filenames(sample_from, sample, random_seed, recursive)
         print(f"Filtering to {len(target_filenames)} target filenames from sample_from")
 
         # Create a lookup for existing results
@@ -446,7 +453,7 @@ def generate_html_visualization_with_shared_images(json_file_path: str, output_h
     return output_html_path
 
 
-def generate_html_visualization(json_file_path: str, output_html_path: str, sample: int = 500, top_only: bool = False, sort_by: str = 'filename', random_seed: int = 0, sample_from: Union[str, List[str], None] = None):
+def generate_html_visualization(json_file_path: str, output_html_path: str, sample: int = 500, top_only: bool = False, sort_by: str = 'filename', random_seed: int = 0, sample_from: Union[str, List[str], None] = None, recursive: bool = False):
     """Generate HTML file showing images with their Gemini ratings."""
 
     print(f"Loading results from {json_file_path}...")
@@ -462,7 +469,7 @@ def generate_html_visualization(json_file_path: str, output_html_path: str, samp
 
     # If sample_from is specified, filter results to only include those filenames
     if sample_from is not None:
-        target_filenames = get_sample_filenames(sample_from, sample, random_seed)
+        target_filenames = get_sample_filenames(sample_from, sample, random_seed, recursive)
         print(f"Filtering to {len(target_filenames)} target filenames from sample_from")
 
         # Create a lookup for existing results
@@ -1047,10 +1054,19 @@ def main():
         '--sample-from',
         help='Directory or JSON file to sample filenames from (for consistent comparison across models)'
     )
+    parser.add_argument(
+        '--recursive', '-r',
+        action='store_true',
+        help='Search for images recursively in subdirectories (only used with --sample-from)'
+    )
     args = parser.parse_args()
 
     # Determine input source
-    input_path = args.input_path or args.labels_dir or "/mnt/c/temp/hero-images/labels"
+    input_path = args.input_path or args.labels_dir
+
+    if not input_path:
+        parser.print_help()
+        sys.exit(1)
 
     # Check if input is a file or directory
     if os.path.isfile(input_path):
@@ -1098,7 +1114,7 @@ def main():
             generate_html_visualization_with_shared_images(
                 json_path, html_path, shared_images_path, shared_images_folder,
                 args.sample, args.top_only, args.sort_by, args.random_seed,
-                args.sample_from, create_images=(i == 0)  # Only create images for first iteration
+                args.sample_from, create_images=(i == 0), recursive=args.recursive  # Only create images for first iteration
             )
 
             # Extract model info for index
@@ -1147,7 +1163,7 @@ def main():
 
     print(f"Creating HTML visualization for: {json_filename}")
 
-    generate_html_visualization(json_path, html_path, args.sample, args.top_only, args.sort_by, args.random_seed, args.sample_from)
+    generate_html_visualization(json_path, html_path, args.sample, args.top_only, args.sort_by, args.random_seed, args.sample_from, args.recursive)
 
     print(f"\n✅ Visualization complete!")
     print(f"📁 Open in browser: {html_path}")

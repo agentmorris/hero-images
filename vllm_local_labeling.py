@@ -501,6 +501,11 @@ Examples:
         '--resume',
         help='Resume from a checkpoint file (path to .tmp.json file)'
     )
+    parser.add_argument(
+        '--recursive', '-r',
+        action='store_true',
+        help='Search for images recursively in subdirectories'
+    )
 
     args = parser.parse_args()
 
@@ -513,7 +518,7 @@ Examples:
 
     # Validate arguments
     if not args.candidates_dir:
-        print("❌ Error: candidates_dir is required (use --setup-help for setup instructions)")
+        parser.print_help()
         sys.exit(1)
 
     if not args.output_dir:
@@ -541,10 +546,17 @@ Examples:
         # Get image files
         print("\n2. Finding candidate images...")
         image_files = []
-        for filename in os.listdir(args.candidates_dir):
-            if filename.lower().endswith(('.jpg', '.jpeg', '.png')):
-                full_path = os.path.join(args.candidates_dir, filename)
-                image_files.append(full_path)
+        if args.recursive:
+            for root, dirs, files in os.walk(args.candidates_dir):
+                for filename in files:
+                    if filename.lower().endswith(('.jpg', '.jpeg', '.png')):
+                        full_path = os.path.join(root, filename)
+                        image_files.append(full_path)
+        else:
+            for filename in os.listdir(args.candidates_dir):
+                if filename.lower().endswith(('.jpg', '.jpeg', '.png')):
+                    full_path = os.path.join(args.candidates_dir, filename)
+                    image_files.append(full_path)
 
         image_files.sort()
 

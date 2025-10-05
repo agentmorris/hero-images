@@ -62,7 +62,7 @@ python3 generate_sequence_aware_candidates_optimized.py
 #### Label images with Gemini 2.5 Flash (via the Gemini Batch API)
 
 ```bash
-python gemini_batch_labeling.py /path/to/candidates --output-dir /path/to/output
+python gemini_batch_labeling.py /path/to/candidates --output-dir /path/to/output --recursive
 ```
 
 
@@ -106,7 +106,7 @@ vllm serve google/gemma-3-12b-it \
 # so even 32k is plenty.
 
 # Run labeling (in another terminal)
-python vllm_local_labeling.py /path/to/candidates --output-dir /path/to/output
+python vllm_local_labeling.py /path/to/candidates --output-dir /path/to/output --recursive
 ```
 
 ##### Label images with Ollama
@@ -119,21 +119,29 @@ ollama serve
 ollama pull gemma3:12b
 
 # Run labeling (with automatic checkpointing every 1000 images)
-python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output
+python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output --recursive
 
 # Resume from checkpoint if interrupted
-python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output --resume /path/to/output/ollama_local_labels_YYYYMMDD_HHMMSS.tmp.json
+python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output --resume /path/to/output/ollama_local_labels_YYYYMMDD_HHMMSS.tmp.json --recursive
 
 # Disable checkpointing for short jobs
-python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output --checkpoint-interval 0
+python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output --checkpoint-interval 0 --recursive
 ```
 
-Alternative models to try:
+Models to try:
 
+* gemma3:4b (3.3GB)
+* gemma3:12b (8.1GB)
 * gemma3:27b (17GB)
-* qwen2.5vl:32b (21GB)
+
+* llava:7b (4.7GB)
+* llava:13b (8.0GB)
 * llava:34b (20GB)
-* qwen2.5vl:72b-instruct (49GB)
+
+* qwen2.5vl:3b (3.2GB)
+* qwen2.5vl:7b (6.0GB)
+* qwen2.5vl:32b (21GB)
+* qwen2.5vl:72b (49GB)
 
 For example:
 
@@ -155,9 +163,9 @@ CUDA_VISIBLE_DEVICES=0 OLLAMA_HOST=localhost:11434 ollama serve
 CUDA_VISIBLE_DEVICES=1 OLLAMA_HOST=localhost:11435 ollama serve
 ```
 
-* If ollama is running as a service, kill it via `sudo systemctl stop ollama`
+* If ollama is running as a service, kill it via `sudo systemctl stop ollama`, re-start it with `sudo systemctl start ollama`
 
-* Models are stored in ~/.ollama/models
+* Models are stored in ~/.ollama/models, unless you change the OLLAMA_MODELS environment variable.  If you run ollama via `ollama serve`, you need to set this variable in the shell where you run `ollama serve`.  If ollama is running as a service, follow [these instructions](https://github.com/ollama/ollama/issues/680#issuecomment-2880768673) to change the model download folder.
 
 * List models with `ollama list`
 
