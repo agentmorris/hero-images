@@ -24,17 +24,20 @@ Usage:
 import json
 import os
 import time
-import base64
 from typing import List, Dict, Any, Optional
-from dataclasses import dataclass
-from PIL import Image
-import io
 import requests
 from datetime import datetime
 import sys
 import argparse
 import subprocess
 import psutil
+
+from hero_images.image_processor import ImageProcessor
+
+
+def sanitize_model_name(model_name: str) -> str:
+    """Sanitize model name for use in filenames by replacing problematic characters."""
+    return model_name.replace(':', '-').replace('/', '-')
 
 
 class GPUChecker:
@@ -91,46 +94,14 @@ class GPUChecker:
             return "Qwen/Qwen2.5-VL-3B-Instruct"
 
 
-class ImageProcessor:
-    """Handles image loading and encoding for VLM."""
-
-    @staticmethod
-    def resize_image_to_768_long_side(image_path: str) -> str:
-        """Resize image and return base64 encoded string."""
-        try:
-            with Image.open(image_path) as img:
-                if img.mode != 'RGB':
-                    img = img.convert('RGB')
-
-                width, height = img.size
-
-                # Resize to 768px on long side (matching Gemini script)
-                if width > height:
-                    new_width = 768
-                    new_height = int((height * 768) / width)
-                else:
-                    new_height = 768
-                    new_width = int((width * 768) / height)
-
-                resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-
-                img_byte_arr = io.BytesIO()
-                resized_img.save(img_byte_arr, format='JPEG', quality=85, optimize=True)
-
-                # Return base64 encoded string
-                return base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
-
-        except Exception as e:
-            raise Exception(f"Failed to process image {image_path}: {str(e)}")
-
-
 class VLLMProcessor:
     """Handles VLM inference via vLLM server."""
 
-    def __init__(self, server_url: str = "http://localhost:8000"):
-        """Initialize with vLLM server URL."""
+    def __init__(self, server_url: str = "http://localhost:8000", image_size: int = 768):
+        """Initialize with vLLM server URL and image size."""
         self.server_url = server_url
         self.model_name = "unknown"  # Will be updated when server is detected
+        self.image_size = image_size
 
         # Create the aesthetic rating prompt (same as Gemini script)
         self.prompt = """You are an expert wildlife photography curator evaluating camera trap images for aesthetic appeal.
@@ -199,7 +170,7 @@ Do not include any text before or after the JSON."""
         """
         try:
             # Process image
-            image_b64 = ImageProcessor.resize_image_to_768_long_side(image_path)
+            image_b64 = ImageProcessor.resize_image_to_base64(image_path, self.image_size)
             filename = os.path.basename(image_path)
 
             # Create custom prompt with filename
@@ -506,6 +477,12 @@ Examples:
         action='store_true',
         help='Search for images recursively in subdirectories'
     )
+    parser.add_argument(
+        '--image-size',
+        type=int,
+        default=768,
+        help='Maximum dimension for resized images (default: 768)'
+    )
 
     args = parser.parse_args()
 
@@ -531,7 +508,7 @@ Examples:
 
     try:
         # Initialize processor
-        processor = VLLMProcessor(args.server_url)
+        processor = VLLMProcessor(args.server_url, args.image_size)
 
         # Check server health
         print("\n1. Checking vLLM server...")
@@ -578,7 +555,8 @@ Examples:
         existing_results = []
         processed_filenames = set()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_filename = f"vllm_local_labels_{timestamp}.json"
+        sanitized_model = sanitize_model_name(processor.model_name)
+        output_filename = f"vllm_local_labels_{sanitized_model}_{timestamp}.json"
         output_path = os.path.join(args.output_dir, output_filename)
         checkpoint_path = output_path.replace('.json', '.tmp.json')
 

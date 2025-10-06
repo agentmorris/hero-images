@@ -29,25 +29,27 @@ The system will process large camera trap collections to identify candidates wit
 
 ### Setup
 
-**For Gemini labeling**
+Install the package in development mode (recommended):
+
+```bash
+pip install -e .
+```
+
+Or install just the requirements:
 
 ```bash
 pip install -r requirements.txt
+```
+
+**For Gemini labeling:** Create an API key file:
+
+```bash
 echo "your-gemini-api-key" > GEMINI_API_KEY.txt
 ```
 
-**For local VLM labeling (vLLM)**
+**For local VLM labeling (Ollama):** Install Ollama:
 
 ```bash
-pip install -r requirements.txt
-pip install vllm
-pip install huggingface-hub
-```
-
-**For local VLM labeling (Ollama)**
-
-```bash
-pip install -r requirements.txt
 curl -fsSL https://ollama.com/install.sh | sh
 ```
 
@@ -62,9 +64,10 @@ python3 generate_sequence_aware_candidates_optimized.py
 #### Label images with Gemini 2.5 Flash (via the Gemini Batch API)
 
 ```bash
-python gemini_batch_labeling.py /path/to/candidates --output-dir /path/to/output --recursive
+python gemini_batch_labeling.py /path/to/candidates --output-dir /path/to/output --recursive --model gemini-2.5-flash
 ```
 
+The `--model` argument is optional; the default is `gemini-2.5-flash`, you can also use `gemini-2.5-pro`.
 
 #### Label images with a local VLM
 
@@ -146,9 +149,9 @@ Models to try:
 For example:
 
 ```bash
-export MODEL_NAME=qwen2.5vl:72b-instruct
+export MODEL_NAME=qwen2.5vl:72b
 ollama pull ${MODEL_NAME}
-python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output --model ${MODEL_NAME}
+python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output --model ${MODEL_NAME} --recursive
 ```
 
 Other Ollama notes:
@@ -163,13 +166,26 @@ CUDA_VISIBLE_DEVICES=0 OLLAMA_HOST=localhost:11434 ollama serve
 CUDA_VISIBLE_DEVICES=1 OLLAMA_HOST=localhost:11435 ollama serve
 ```
 
-* If ollama is running as a service, kill it via `sudo systemctl stop ollama`, re-start it with `sudo systemctl start ollama`
+* If ollama is running as a service, kill it via `sudo systemctl stop ollama`, re-start it with `sudo systemctl start ollama`.  Disable service auto-start with `sudo systemctl disable ollama`.
 
 * Models are stored in ~/.ollama/models, unless you change the OLLAMA_MODELS environment variable.  If you run ollama via `ollama serve`, you need to set this variable in the shell where you run `ollama serve`.  If ollama is running as a service, follow [these instructions](https://github.com/ollama/ollama/issues/680#issuecomment-2880768673) to change the model download folder.
 
 * List models with `ollama list`
 
 * Remove models with `ollama rm`
+
+* With some models (not even particularly large models) I was getting timeouts during model loading.  This seems sporadic and unrelated to model size, system load, etc.  The following might help, in the shell where you're going to run `ollama serve`:
+
+```bash
+export OLLAMA_KEEP_ALIVE=1h
+export OLLAMA_LOAD_TIMEOUT=30m
+```
+
+#### Shared parameters
+
+- `--recursive` or `-r` - Search for images recursively in subdirectories
+- `--image-size N` - Maximum dimension for resized images (default: 768)
+
 
 #### Checkpoint/resume options for both local VLM labeling Scripts
 
@@ -269,13 +285,14 @@ Labeled dataset (0-10 aesthetic scores)
 
 - **Parallelization**: Currently most of the models I'm using via ollama don't quite max out 1 GPU, and the other is siting idle.  Allow request submission across two threads.
 - **Heuristic improvement**: Revisit sampling heuristics, which were originally designed to get a range of image quality for training, but I'm using the pipeline now with the intention of just finding good images
-- **Prompt engineering**: Try a variety of prompts, consider few-shot training, add more wildlife-specific criteria (e.g. "eye contact with camera", "different species interacting", etc.)
+- **Prompt engineering**: Try a variety of prompts, consider few-shot training, add more wildlife-specific criteria (e.g. "eye contact with camera", "different species interacting", etc.).
+- **Hyperparameter tuning**: Experiment with temperature, max_tokens
 - **VLM comparison**: Compare quality between Gemini models and local VLMs, e.g. highlighting images with significant disagreement
 - **Human labeling**: Implement Labelme integration for human validation
 - **Production deployment**: Scale to operational camera trap processing, e.g. include checkpoints to handle the case where large jobs are interrupted
 
+
 ## Technical notes
 
-- **Image preprocessing**: All methods resize to 768px max dimension
+- **Image preprocessing**: All methods resize to 768px max dimension by default
 - **Output compatibility**: All labeling scripts produce identical JSON format for visualization
-- **GPU requirements**: Local VLM requires ~20-30GB VRAM for 7B model, 10-15GB for 3B model

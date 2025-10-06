@@ -7,6 +7,16 @@ pillow>=11.3.0
 google-generativeai>=0.8.5
 google-genai>=1.38.0
 
+# Local VLM support
+vllm>=0.3.0
+huggingface-hub>=0.19.0
+
+# HTTP requests (for Ollama and vLLM)
+requests>=2.31.0
+
+# System utilities
+psutil>=5.9.0
+
 # Additional dependencies (installed automatically with above)
 # google-ai-generativelanguage>=0.6.15
 # google-api-core>=2.25.1

@@ -20,57 +20,32 @@ Usage:
 import json
 import os
 import time
-import base64
 from typing import List, Dict, Any, Optional
-from dataclasses import dataclass
-from PIL import Image
-import io
 import requests
 from datetime import datetime
 import sys
 import argparse
 
+from hero_images.image_processor import ImageProcessor
 
-class ImageProcessor:
-    """Handles image loading and encoding for VLM."""
+# The model gets loaded when the first image is processed, and in some cases
+# this can take tens of minutes.
+image_processing_timeout_seconds = 3600
 
-    @staticmethod
-    def resize_image_to_768_long_side(image_path: str) -> str:
-        """Resize image and return base64 encoded string."""
-        try:
-            with Image.open(image_path) as img:
-                if img.mode != 'RGB':
-                    img = img.convert('RGB')
 
-                width, height = img.size
-
-                # Resize to 768px on long side (matching Gemini script)
-                if width > height:
-                    new_width = 768
-                    new_height = int((height * 768) / width)
-                else:
-                    new_height = 768
-                    new_width = int((width * 768) / height)
-
-                resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-
-                img_byte_arr = io.BytesIO()
-                resized_img.save(img_byte_arr, format='JPEG', quality=85, optimize=True)
-
-                # Return base64 encoded string
-                return base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
-
-        except Exception as e:
-            raise Exception(f"Failed to process image {image_path}: {str(e)}")
+def sanitize_model_name(model_name: str) -> str:
+    """Sanitize model name for use in filenames by replacing problematic characters."""
+    return model_name.replace(':', '-').replace('/', '-')
 
 
 class OllamaProcessor:
     """Handles VLM inference via Ollama server."""
 
-    def __init__(self, server_url: str = "http://localhost:11434", model_name: str = "gemma3:12b"):
-        """Initialize with Ollama server URL and model name."""
+    def __init__(self, server_url: str = "http://localhost:11434", model_name: str = "gemma3:12b", image_size: int = 768):
+        """Initialize with Ollama server URL, model name, and image size."""
         self.server_url = server_url
         self.model_name = model_name
+        self.image_size = image_size
 
         # Create the aesthetic rating prompt (same as vLLM script)
         self.prompt = """You are an expert wildlife photography curator evaluating camera trap images for aesthetic appeal.
@@ -101,7 +76,7 @@ Respond with ONLY a JSON object in this exact format:
 Do not include any text before or after the JSON."""
 
     def check_server_health(self) -> bool:
-        """Check if Ollama server is running and responsive."""
+        """Check whether Ollama server is running and responsive."""
         try:
             response = requests.get(f"{self.server_url}/api/tags", timeout=5)
             if response.status_code == 200:
@@ -115,14 +90,14 @@ Do not include any text before or after the JSON."""
             return False
 
     def check_model_available(self) -> bool:
-        """Check if the specified model is available."""
+        """Check whether the specified model is available."""
         try:
             response = requests.get(f"{self.server_url}/api/tags", timeout=10)
             if response.status_code == 200:
                 models_data = response.json()
                 available_models = [model['name'] for model in models_data.get('models', [])]
 
-                # Check if our model is in the list (handle version tags)
+                # Check whether our model is in the list (handle version tags)
                 model_available = any(self.model_name in model for model in available_models)
 
                 if model_available:
@@ -147,7 +122,7 @@ Do not include any text before or after the JSON."""
         """
         try:
             # Process image
-            image_b64 = ImageProcessor.resize_image_to_768_long_side(image_path)
+            image_b64 = ImageProcessor.resize_image_to_base64(image_path, self.image_size)
             filename = os.path.basename(image_path)
 
             # Create custom prompt with filename
@@ -169,15 +144,18 @@ Do not include any text before or after the JSON."""
             response = requests.post(
                 f"{self.server_url}/api/generate",
                 json=payload,
-                timeout=60
+                timeout=image_processing_timeout_seconds
             )
 
             if response.status_code != 200:
+                error_string = f"HTTP {response.status_code}: {response.text}"
+                print('Error processing {}: {}'.format(
+                    image_path,error_string))
                 return {
                     'image_path': image_path,
                     'image_filename': filename,
                     'success': False,
-                    'error': f"HTTP {response.status_code}: {response.text}"
+                    'error': error_string
                 }
 
             # Parse response
@@ -442,6 +420,12 @@ Examples:
         action='store_true',
         help='Search for images recursively in subdirectories'
     )
+    parser.add_argument(
+        '--image-size',
+        type=int,
+        default=768,
+        help='Maximum dimension for resized images (default: 768)'
+    )
 
     args = parser.parse_args()
 
@@ -467,7 +451,7 @@ Examples:
 
     try:
         # Initialize processor
-        processor = OllamaProcessor(args.server_url, args.model)
+        processor = OllamaProcessor(args.server_url, args.model, args.image_size)
 
         # Check server health
         print("\n1. Checking Ollama server...")
@@ -516,7 +500,8 @@ Examples:
         existing_results = []
         processed_filenames = set()
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_filename = f"ollama_local_labels_{timestamp}.json"
+        sanitized_model = sanitize_model_name(args.model)
+        output_filename = f"ollama_local_labels_{sanitized_model}_{timestamp}.json"
         output_path = os.path.join(args.output_dir, output_filename)
         checkpoint_path = output_path.replace('.json', '.tmp.json')
 
@@ -565,7 +550,8 @@ Examples:
                 all_results.append(result)
 
                 # Progress update
-                if (i + 1) % 10 == 0 or i == len(images_to_process) - 1:
+                # if (i + 1) % 10 == 0 or i == len(images_to_process) - 1:
+                if True:
                     successful = len([r for r in new_results if r['success']])
                     print(f"  Processed {i + 1}/{len(images_to_process)} new images ({successful} successful)")
 

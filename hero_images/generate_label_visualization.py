@@ -138,7 +138,7 @@ def generate_html_visualization_with_shared_images(json_file_path: str, output_h
     successful_results = [r for r in results if r['success']]
     failed_results = [r for r in results if not r['success']]
 
-    # Check if results were sampled
+    # Check whether results were sampled
     display_note = ""
     if sample > 0 and len(results) > sample:
         display_note = f" (showing random sample of {sample} from {len(results)})"
@@ -380,7 +380,7 @@ def generate_html_visualization_with_shared_images(json_file_path: str, output_h
             safe_filename = result['image_filename'].replace('#', '_').replace(':', '_')
             expected_image_path = os.path.join(shared_images_path, safe_filename)
 
-            # Check if image exists in shared folder, if not create it
+            # Check whether image exists in shared folder, if not create it
             if os.path.exists(expected_image_path):
                 image_rel_path = os.path.join(os.path.basename(shared_images_path), safe_filename)
             else:
@@ -507,7 +507,7 @@ def generate_html_visualization(json_file_path: str, output_html_path: str, samp
     successful_results = [r for r in results if r['success']]
     failed_results = [r for r in results if not r['success']]
 
-    # Check if results were sampled
+    # Check whether results were sampled
     display_note = ""
     if sample > 0 and len(results) > sample:
         display_note = f" (showing random sample of {sample} from {len(results)})"
@@ -1068,7 +1068,7 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    # Check if input is a file or directory
+    # Check whether input is a file or directory
     if os.path.isfile(input_path):
         # Direct file specified
         if not input_path.endswith('.json'):

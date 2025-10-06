@@ -20,14 +20,21 @@ import os
 import time
 import base64
 from typing import List, Dict, Any, Optional
-from dataclasses import dataclass
-from PIL import Image
-import io
 import google.generativeai as genai
 from google import genai as batch_genai
 from datetime import datetime
 import sys
 import argparse
+
+from hero_images.image_processor import ImageProcessor
+
+
+def sanitize_model_name(model_name: str) -> str:
+    """Sanitize model name for use in filenames by replacing problematic characters."""
+    # Remove "models/" prefix if present
+    name = model_name.replace('models/', '')
+    # Replace problematic characters
+    return name.replace(':', '-').replace('/', '-')
 
 
 def load_api_key() -> str:
@@ -44,41 +51,11 @@ def load_api_key() -> str:
         )
 
 
-class ImageProcessor:
-    """Handles image loading and resizing."""
-
-    @staticmethod
-    def resize_image_to_768_long_side(image_path: str) -> bytes:
-        """Resize image to 768px on long side while preserving aspect ratio."""
-        try:
-            with Image.open(image_path) as img:
-                if img.mode != 'RGB':
-                    img = img.convert('RGB')
-
-                width, height = img.size
-
-                if width > height:
-                    new_width = 768
-                    new_height = int((height * 768) / width)
-                else:
-                    new_height = 768
-                    new_width = int((width * 768) / height)
-
-                resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-
-                img_byte_arr = io.BytesIO()
-                resized_img.save(img_byte_arr, format='JPEG', quality=85, optimize=True)
-                return img_byte_arr.getvalue()
-
-        except Exception as e:
-            raise Exception(f"Failed to process image {image_path}: {str(e)}")
-
-
 class GeminiBatchProcessor:
     """Handles Gemini Batch API workflow."""
 
-    def __init__(self, api_key: str, model_name: str = "gemini-2.5-flash"):
-        """Initialize with API key and model name."""
+    def __init__(self, api_key: str, model_name: str = "gemini-2.5-flash", image_size: int = 768):
+        """Initialize with API key, model name, and image size."""
         # Configure old API for synchronous operations (if needed)
         genai.configure(api_key=api_key)
         # Initialize new batch API client
@@ -87,6 +64,7 @@ class GeminiBatchProcessor:
         if not model_name.startswith("models/"):
             model_name = f"models/{model_name}"
         self.model_name = model_name
+        self.image_size = image_size
 
         # Create the aesthetic rating prompt
         self.prompt = """You are an expert wildlife photography curator evaluating camera trap images for aesthetic appeal.
@@ -133,7 +111,7 @@ Do not include any text before or after the JSON."""
                     print(f"  Prepared {i + 1}/{len(image_paths)} requests...")
 
                 # Load and resize image
-                image_bytes = ImageProcessor.resize_image_to_768_long_side(image_path)
+                image_bytes = ImageProcessor.resize_image_to_bytes(image_path, self.image_size)
                 image_b64 = base64.b64encode(image_bytes).decode('utf-8')
 
                 # Create custom prompt with filename for cross-validation
@@ -487,7 +465,7 @@ Do not include any text before or after the JSON."""
 
                         returned_filenames.append(returned_filename)
 
-                        # Check if filename matches any expected filename
+                        # Check whether filename matches any expected filename
                         if returned_filename not in expected_filenames:
                             print(f"⚠️  Warning: Response {result_index} returned unexpected filename '{returned_filename}' - skipping")
                             continue
@@ -509,7 +487,7 @@ Do not include any text before or after the JSON."""
                         print(f"⚠️  Warning: Response {result_index} has no valid text - skipping")
 
                 except Exception as e:
-                    # Check if this is the duplicate filename error that should abort
+                    # Check whether this is the duplicate filename error that should abort
                     if "Duplicate filename in responses" in str(e):
                         raise  # Re-raise to abort processing
 
@@ -639,6 +617,12 @@ Examples:
         default='gemini-2.5-flash',
         help='Gemini model name to use (default: gemini-2.5-flash). Can optionally include "models/" prefix.'
     )
+    parser.add_argument(
+        '--image-size',
+        type=int,
+        default=768,
+        help='Maximum dimension for resized images (default: 768)'
+    )
 
     args = parser.parse_args()
 
@@ -686,7 +670,7 @@ Examples:
 
         # Handle resume if requested
         if args.resume:
-            processor = GeminiBatchProcessor(api_key, args.model)
+            processor = GeminiBatchProcessor(api_key, args.model, args.image_size)
 
             # Determine if input is a batch ID or metadata file
             if args.resume.endswith('.json') and 'metadata' in args.resume:
@@ -748,7 +732,8 @@ Examples:
 
                     print(f"\n7. Saving results to {OUTPUT_DIR}...")
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    output_filename = f"gemini_batch_labels_{timestamp}.json"
+                    sanitized_model = sanitize_model_name(processor.model_name)
+                    output_filename = f"gemini_batch_labels_{sanitized_model}_{timestamp}.json"
                     output_path = os.path.join(OUTPUT_DIR, output_filename)
 
                     # Create batch_info dict from BatchJob object
@@ -780,7 +765,7 @@ Examples:
             return
 
         # Initialize processor
-        processor = GeminiBatchProcessor(api_key, args.model)
+        processor = GeminiBatchProcessor(api_key, args.model, args.image_size)
 
         # Get image files
         print("\n2. Finding candidate images...")
@@ -858,7 +843,8 @@ Examples:
         # Save results
         print(f"\n7. Saving results...")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_filename = f"gemini_batch_labels_{timestamp}.json"
+        sanitized_model = sanitize_model_name(processor.model_name)
+        output_filename = f"gemini_batch_labels_{sanitized_model}_{timestamp}.json"
         output_path = os.path.join(OUTPUT_DIR, output_filename)
 
         # Create batch_info dict from BatchJob object
