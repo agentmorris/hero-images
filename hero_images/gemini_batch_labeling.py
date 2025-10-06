@@ -19,14 +19,44 @@ import json
 import os
 import time
 import base64
-from typing import List, Dict, Any, Optional
-import google.generativeai as genai
-from google import genai as batch_genai
-from datetime import datetime
 import sys
 import argparse
 
+import google.generativeai as genai
+
+from typing import List, Dict, Any, Optional
+from google import genai as batch_genai
+from datetime import datetime
+
 from hero_images.image_processor import ImageProcessor
+
+
+# Gemini Batch API Pricing (as of January 2025, per https://ai.google.dev/gemini-api/docs/pricing)
+# Batch API offers 50% discount vs. standard API pricing
+#
+# Gemini 2.5 Flash Batch:
+#   - Input: $0.15 per 1M tokens
+#   - Output: $1.25 per 1M tokens
+#
+# Gemini 2.5 Pro Batch:
+#   - Input: $0.625 per 1M tokens (prompts ≤200k tokens)
+#   - Output: $5.00 per 1M tokens (prompts ≤200k tokens)
+#
+# Image token calculation:
+#   - Images are tiled into 768x768 pixel tiles
+#   - Each tile = 258 tokens
+#   - For 768x768 or smaller: 1 tile = 258 tokens
+#   - Calculation: tiles = ((width+767)//768) * ((height+767)//768)
+#
+# Per-image cost estimate (for 768px images with ~300 token prompt and ~200 token response):
+#   - Image input: 258 tokens
+#   - Text prompt: ~300 tokens
+#   - Text output: ~200 tokens
+#   - Total input: ~558 tokens
+#   - Total output: ~200 tokens
+#
+GEMINI_25_FLASH_COST_PER_IMAGE = (558 * 0.15 / 1_000_000) + (200 * 1.25 / 1_000_000)  # ~$0.00033 per image
+GEMINI_25_PRO_COST_PER_IMAGE = (558 * 0.625 / 1_000_000) + (200 * 5.00 / 1_000_000)  # ~$0.00135 per image
 
 
 def sanitize_model_name(model_name: str) -> str:
@@ -796,8 +826,28 @@ Examples:
             return
 
         # Ask for confirmation (unless auto-confirm is set)
-        estimated_cost = len(image_files) * 0.003  # Rough estimate
-        print(f"\nEstimated cost: ${estimated_cost:.2f}")
+        # Estimate cost based on model type
+        model_name_lower = processor.model_name.lower()
+        if 'gemini-2.5-flash' in model_name_lower or 'gemini-2-5-flash' in model_name_lower:
+            cost_per_image = GEMINI_25_FLASH_COST_PER_IMAGE
+            model_info = "Gemini 2.5 Flash"
+        elif 'gemini-2.5-pro' in model_name_lower or 'gemini-2-5-pro' in model_name_lower:
+            cost_per_image = GEMINI_25_PRO_COST_PER_IMAGE
+            model_info = "Gemini 2.5 Pro"
+        else:
+            cost_per_image = None
+            model_info = processor.model_name
+
+        if cost_per_image:
+            estimated_cost = len(image_files) * cost_per_image
+            print(f"\nEstimated cost ({model_info}): ${estimated_cost:.4f}")
+            if args.image_size != 768:
+                print(f"⚠️  Warning: Cost estimate assumes 768px images. Your --image-size is {args.image_size}px.")
+                print(f"   Actual cost may vary depending on image dimensions.")
+        else:
+            print(f"\n⚠️  Warning: Cost estimate unavailable for model {model_info}")
+            print(f"   Cost constants only defined for Gemini 2.5 Flash and Gemini 2.5 Pro")
+
         if args.auto_confirm:
             print("Auto-confirming batch submission...")
         else:

@@ -56,7 +56,7 @@ curl -fsSL https://ollama.com/install.sh | sh
 ### Select candidates for LLM labeling
 
 ```bash
-python3 generate_sequence_aware_candidates_optimized.py
+python -m hero_images.generate_sequence_aware_candidates_optimized
 ```
 
 ### Label images
@@ -64,7 +64,7 @@ python3 generate_sequence_aware_candidates_optimized.py
 #### Label images with Gemini 2.5 Flash (via the Gemini Batch API)
 
 ```bash
-python gemini_batch_labeling.py /path/to/candidates --output-dir /path/to/output --recursive --model gemini-2.5-flash
+python -m hero_images.gemini_batch_labeling /path/to/candidates --output-dir /path/to/output --recursive --model gemini-2.5-flash
 ```
 
 The `--model` argument is optional; the default is `gemini-2.5-flash`, you can also use `gemini-2.5-pro`.
@@ -79,7 +79,7 @@ My experience was precisely consistent with Internet summaries: vLLM is way fast
 
 ```bash
 # Check GPU memory and get setup instructions
-python vllm_local_labeling.py --setup-help
+python -m hero_images.vllm_local_labeling --setup-help
 
 # Start vLLM server (example for Qwen-2.5-VL-7B on 2x4090)
 vllm serve Qwen/Qwen2.5-VL-7B-Instruct \
@@ -109,7 +109,7 @@ vllm serve google/gemma-3-12b-it \
 # so even 32k is plenty.
 
 # Run labeling (in another terminal)
-python vllm_local_labeling.py /path/to/candidates --output-dir /path/to/output --recursive
+python -m hero_images.vllm_local_labeling /path/to/candidates --output-dir /path/to/output --recursive
 ```
 
 ##### Label images with Ollama
@@ -122,13 +122,13 @@ ollama serve
 ollama pull gemma3:12b
 
 # Run labeling (with automatic checkpointing every 1000 images)
-python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output --recursive
+python -m hero_images.ollama_local_labeling /path/to/candidates --output-dir /path/to/output --recursive
 
 # Resume from checkpoint if interrupted
-python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output --resume /path/to/output/ollama_local_labels_YYYYMMDD_HHMMSS.tmp.json --recursive
+python -m hero_images.ollama_local_labeling /path/to/candidates --output-dir /path/to/output --resume /path/to/output/ollama_local_labels_YYYYMMDD_HHMMSS.tmp.json --recursive
 
 # Disable checkpointing for short jobs
-python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output --checkpoint-interval 0 --recursive
+python -m hero_images.ollama_local_labeling /path/to/candidates --output-dir /path/to/output --checkpoint-interval 0 --recursive
 ```
 
 Models to try:
@@ -151,7 +151,7 @@ For example:
 ```bash
 export MODEL_NAME=qwen2.5vl:72b
 ollama pull ${MODEL_NAME}
-python ollama_local_labeling.py /path/to/candidates --output-dir /path/to/output --model ${MODEL_NAME} --recursive
+python -m hero_images.ollama_local_labeling /path/to/candidates --output-dir /path/to/output --model ${MODEL_NAME} --recursive
 ```
 
 Other Ollama notes:
@@ -162,7 +162,7 @@ Other Ollama notes:
 # First instance (GPU 0)
 CUDA_VISIBLE_DEVICES=0 OLLAMA_HOST=localhost:11434 ollama serve
 
-# Second instance (GPU 1) 
+# Second instance (GPU 1)
 CUDA_VISIBLE_DEVICES=1 OLLAMA_HOST=localhost:11435 ollama serve
 ```
 
@@ -200,21 +200,21 @@ export OLLAMA_LOAD_TIMEOUT=30m
 **Single model visualization**
 
 ```bash
-python generate_label_visualization.py /path/to/batch_labels_file_name_20250923_143022.json
+python -m hero_images.generate_label_visualization /path/to/batch_labels_file_name_20250923_143022.json
 ```
 
 **Multi-model comparison dashboard**
 
 ```bash
 # Generate comparison dashboard for all models in a directory
-python generate_label_visualization.py /path/to/results_directory --sample-from /path/to/candidates --sample 100 --random-seed 42
+python -m hero_images.generate_label_visualization /path/to/results_directory --sample-from /path/to/candidates --sample 100 --random-seed 42
 ```
 
 Notes to self:
 
 ```bash
-python generate_label_visualization.py /mnt/c/temp/hero-images/labels/ --sample 1000 --random-seed 0 --sample-from /mnt/c/temp/hero-images/candidates/heuristics-20250923162520/
-python generate_label_visualization.py /mnt/c/temp/hero-images/labels/ --sample 1000 --random-seed 0 --sample-from /mnt/c/temp/hero-images/candidates/heuristics-20250923162520/ --sort-by score
+python -m hero_images.generate_label_visualization /mnt/c/temp/hero-images/labels/ --sample 1000 --random-seed 0 --sample-from /mnt/c/temp/hero-images/candidates/heuristics-20250923162520/
+python -m hero_images.generate_label_visualization /mnt/c/temp/hero-images/labels/ --sample 1000 --random-seed 0 --sample-from /mnt/c/temp/hero-images/candidates/heuristics-20250923162520/ --sort-by score
 ```
 
 This creates:
@@ -239,7 +239,7 @@ If you need to stop a batch job (e.g., if it's taking too long or you made an er
 
 ```bash
 # When you interrupt polling with Ctrl+C, the script shows the cancel command:
-python gemini_batch_labeling.py --cancel batches/xyz789
+python -m hero_images.gemini_batch_labeling --cancel batches/xyz789
 ```
 
 Ctrl+C only stops the local script - the job continues running on Google's servers until cancelled.
@@ -249,7 +249,7 @@ Ctrl+C only stops the local script - the job continues running on Google's serve
 If your script was interrupted or you want to retrieve results from a completed job:
 
 ```bash
-python gemini_batch_labeling.py --resume /path/to/gemini_batch_metadata_YYYYMMDD_HHMMSS.json
+python -m hero_images.gemini_batch_labeling --resume /path/to/gemini_batch_metadata_YYYYMMDD_HHMMSS.json
 ```
 
 Resume behavior:
