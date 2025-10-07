@@ -1059,6 +1059,10 @@ def main():
         action='store_true',
         help='Search for images recursively in subdirectories (only used with --sample-from)'
     )
+    parser.add_argument(
+        '--output-dir', '-o',
+        help='Output directory for HTML files and images (default: same directory as input JSON files)'
+    )
     args = parser.parse_args()
 
     # Determine input source
@@ -1076,10 +1080,16 @@ def main():
             return
 
         json_path = input_path
-        output_dir = os.path.dirname(input_path)
+        # Use output_dir if specified, otherwise use same directory as input
+        output_dir = args.output_dir if args.output_dir else os.path.dirname(input_path)
+        # Create output directory if it doesn't exist
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
         json_filename = os.path.basename(input_path)
 
         print(f"Using specific JSON file: {json_filename}")
+        if args.output_dir:
+            print(f"Output directory: {output_dir}")
 
     elif os.path.isdir(input_path):
         # Directory specified - find all label files and generate index
@@ -1096,17 +1106,25 @@ def main():
         json_files.sort()  # Sort alphabetically for consistent ordering
         print(f"Found {len(json_files)} label files to process")
 
+        # Use output_dir if specified, otherwise use same directory as input
+        output_dir = args.output_dir if args.output_dir else labels_dir
+        # Create output directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
+
+        if args.output_dir:
+            print(f"Output directory: {output_dir}")
+
         # Create shared timestamp and images folder for all visualizations
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         shared_images_folder = f"batch_labels_{timestamp}_images"
-        shared_images_path = os.path.join(labels_dir, shared_images_folder)
+        shared_images_path = os.path.join(output_dir, shared_images_folder)
 
         # Generate individual HTML files for each JSON file
         html_files_info = []
         for i, json_filename in enumerate(json_files):
             json_path = os.path.join(labels_dir, json_filename)
             html_filename = json_filename.replace('.json', '.html')
-            html_path = os.path.join(labels_dir, html_filename)
+            html_path = os.path.join(output_dir, html_filename)
 
             print(f"Generating visualization for: {json_filename}")
 
@@ -1145,7 +1163,7 @@ def main():
 
         # Generate index HTML file (using same timestamp)
         index_filename = f"index.{timestamp}.html"
-        index_path = os.path.join(labels_dir, index_filename)
+        index_path = os.path.join(output_dir, index_filename)
 
         generate_index_html(index_path, html_files_info, args)
 
