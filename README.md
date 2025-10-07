@@ -14,7 +14,7 @@ The system will process large camera trap collections to identify candidates wit
 ### Scripts
 
 - **`generate_sequence_aware_candidates_optimized.py`** - Generate candidates for labeling using heuristics
-- **`gemini_batch_labeling.py`** - Asynchronous API labeling using the Gemini batch API
+- **`gemini_labeling.py`** - Gemini API labeling (supports both batch and synchronous modes)
 - **`vllm_local_labeling.py`** - Local VLM labeling via vLLM
 - **`ollama_local_labeling.py`** - Local VLM labeling via Ollama models)
 - **`generate_label_visualization.py`** - Create HTML visualizations compatible with all labeling results
@@ -61,10 +61,26 @@ python -m hero_images.generate_sequence_aware_candidates_optimized
 
 ### Label images
 
-#### Label images with Gemini 2.5 Flash (via the Gemini Batch API)
+#### Label images with Gemini 2.5 Flash
+
+The Gemini labeling script supports two modes:
+
+**Batch mode (default, recommended for large jobs):**
+- 50% cost discount vs. synchronous API
+- Asynchronous processing (takes hours but runs on Google's servers)
+- Can resume/cancel jobs
 
 ```bash
-python -m hero_images.gemini_batch_labeling /path/to/candidates --output-dir /path/to/output --recursive --model gemini-2.5-flash
+python -m hero_images.gemini_labeling /path/to/candidates --output-dir /path/to/output --recursive
+```
+
+**Synchronous mode (good for smaller jobs):**
+- 2x cost vs. batch mode
+- Real-time processing with immediate results
+- Progress updates as images are processed
+
+```bash
+python -m hero_images.gemini_labeling /path/to/candidates --output-dir /path/to/output --recursive --sync
 ```
 
 The `--model` argument is optional; the default is `gemini-2.5-flash`, you can also use `gemini-2.5-pro`.
@@ -181,7 +197,15 @@ export OLLAMA_KEEP_ALIVE=1h
 export OLLAMA_LOAD_TIMEOUT=30m
 ```
 
-#### Shared parameters
+#### Shared parameters for Gemini labeling
+
+- `--recursive` or `-r` - Search for images recursively in subdirectories
+- `--image-size N` - Maximum dimension for resized images (default: 768)
+- `--model MODEL` - Gemini model to use (default: gemini-2.5-flash)
+- `--auto-confirm` or `-y` - Skip cost confirmation prompt
+- `--sync` - Use synchronous API instead of batch (2x cost, real-time results)
+
+#### Shared parameters for local VLM labeling
 
 - `--recursive` or `-r` - Search for images recursively in subdirectories
 - `--image-size N` - Maximum dimension for resized images (default: 768)
@@ -233,23 +257,25 @@ This creates:
 
 ## Gemini batch job management
 
-### Cancel a running job
+### Cancel a running batch job
 
 If you need to stop a batch job (e.g., if it's taking too long or you made an error):
 
 ```bash
 # When you interrupt polling with Ctrl+C, the script shows the cancel command:
-python -m hero_images.gemini_batch_labeling --cancel batches/xyz789
+python -m hero_images.gemini_labeling --cancel batches/xyz789
 ```
 
 Ctrl+C only stops the local script - the job continues running on Google's servers until cancelled.
 
-### Resume jobs (running or completed)
+Cancellation is only available for batch jobs, not synchronous processing.
+
+### Resume batch jobs (running or completed)
 
 If your script was interrupted or you want to retrieve results from a completed job:
 
 ```bash
-python -m hero_images.gemini_batch_labeling --resume /path/to/gemini_batch_metadata_YYYYMMDD_HHMMSS.json
+python -m hero_images.gemini_labeling --resume /path/to/gemini_batch_metadata_YYYYMMDD_HHMMSS.json
 ```
 
 Resume behavior:
@@ -257,6 +283,8 @@ Resume behavior:
 - **Running jobs**: Continues polling until completion
 - **Completed jobs**: Immediately retrieves and saves results
 - **Failed/cancelled jobs**: Shows status and exits
+
+Resuming is only available for batch jobs, not synchronous processing.
 
 
 ## Data pipeline
@@ -270,15 +298,6 @@ Candidates (N diverse images)
     ↓ (Gemini 2.5 Flash or Local VLM Labeling)
 Labeled dataset (0-10 aesthetic scores)
 ```
-
-
-## Cost and performance comparison
-
-| Method | Cost | Speed | GPU Required | Quality |
-|--------|------|-------|--------------|---------|
-| **Local VLM (Qwen2.5-VL-7B)** | Free | ~2-5s per image | Yes (24GB+ VRAM) | High |
-| **Gemini Batch API** | ~$0.003 per image | Async (hours) | No | High |
-| **Gemini Sync API** | ~$0.006 per image | ~1-2s per image | No | High |
 
 
 ## Future work

@@ -1,16 +1,26 @@
 """
-Gemini Batch API Labeling Script for Hero Images
+Gemini Labeling Script for Hero Images
 
-This script handles the complete asynchronous batch workflow:
-1. Prepares JSONL file with all image requests
+This script supports both batch and synchronous labeling workflows:
+
+Batch mode (default):
+1. Prepares requests for all images
 2. Submits batch job to Gemini
 3. Polls for completion
 4. Downloads and processes results
 5. Generates final JSON output
 
+Synchronous mode (--sync):
+1. Processes images one-by-one in real-time
+2. Immediate results with progress updates
+3. Good for smaller jobs or when you need results quickly
+
 Usage:
-    python3 gemini_batch_labeling.py <candidates_directory>
-    python3 gemini_batch_labeling.py /path/to/candidates --output-dir /path/to/results
+    # Batch mode (default, recommended for large jobs)
+    python3 gemini_labeling.py /path/to/candidates --output-dir /path/to/results
+
+    # Synchronous mode (good for smaller jobs)
+    python3 gemini_labeling.py /path/to/candidates --output-dir /path/to/results --sync
 
 Run this script independently - it will handle everything automatically.
 """
@@ -31,9 +41,9 @@ from datetime import datetime
 from hero_images.image_processor import ImageProcessor
 
 
-# Gemini Batch API Pricing (as of January 2025, per https://ai.google.dev/gemini-api/docs/pricing)
-# Batch API offers 50% discount vs. standard API pricing
+# Gemini API Pricing (as of January 2025, per https://ai.google.dev/gemini-api/docs/pricing)
 #
+# BATCH API (50% discount vs. standard API):
 # Gemini 2.5 Flash Batch:
 #   - Input: $0.15 per 1M tokens
 #   - Output: $1.25 per 1M tokens
@@ -41,6 +51,15 @@ from hero_images.image_processor import ImageProcessor
 # Gemini 2.5 Pro Batch:
 #   - Input: $0.625 per 1M tokens (prompts ≤200k tokens)
 #   - Output: $5.00 per 1M tokens (prompts ≤200k tokens)
+#
+# SYNCHRONOUS API (standard pricing):
+# Gemini 2.5 Flash:
+#   - Input: $0.30 per 1M tokens
+#   - Output: $2.50 per 1M tokens
+#
+# Gemini 2.5 Pro:
+#   - Input: $1.25 per 1M tokens (prompts ≤200k tokens)
+#   - Output: $10.00 per 1M tokens (prompts ≤200k tokens)
 #
 # Image token calculation:
 #   - Images are tiled into 768x768 pixel tiles
@@ -55,8 +74,13 @@ from hero_images.image_processor import ImageProcessor
 #   - Total input: ~558 tokens
 #   - Total output: ~200 tokens
 #
-GEMINI_25_FLASH_COST_PER_IMAGE = (558 * 0.15 / 1_000_000) + (200 * 1.25 / 1_000_000)  # ~$0.00033 per image
-GEMINI_25_PRO_COST_PER_IMAGE = (558 * 0.625 / 1_000_000) + (200 * 5.00 / 1_000_000)  # ~$0.00135 per image
+# Batch API costs:
+GEMINI_25_FLASH_BATCH_COST_PER_IMAGE = (558 * 0.15 / 1_000_000) + (200 * 1.25 / 1_000_000)  # ~$0.00033 per image
+GEMINI_25_PRO_BATCH_COST_PER_IMAGE = (558 * 0.625 / 1_000_000) + (200 * 5.00 / 1_000_000)  # ~$0.00135 per image
+
+# Synchronous API costs (2x batch API):
+GEMINI_25_FLASH_SYNC_COST_PER_IMAGE = (558 * 0.30 / 1_000_000) + (200 * 2.50 / 1_000_000)  # ~$0.00067 per image
+GEMINI_25_PRO_SYNC_COST_PER_IMAGE = (558 * 1.25 / 1_000_000) + (200 * 10.00 / 1_000_000)  # ~$0.00270 per image
 
 
 def sanitize_model_name(model_name: str) -> str:
@@ -409,7 +433,7 @@ Do not include any text before or after the JSON."""
                 print("\n⚠️  Polling interrupted by user")
                 print(f"Batch job name: {batch_job.name}")
                 print(f"To cancel this job, run:")
-                print(f"  python gemini_batch_labeling.py --cancel {batch_job.name}")
+                print(f"  python -m hero_images.gemini_labeling --cancel {batch_job.name}")
                 print("💡 The job will continue running on Google's servers until cancelled")
                 raise
 
@@ -577,29 +601,226 @@ Do not include any text before or after the JSON."""
         return output_path
 
 
+class GeminiSyncProcessor:
+    """Handles synchronous Gemini API processing for real-time labeling."""
+
+    def __init__(self, api_key: str, model_name: str = "gemini-2.5-flash", image_size: int = 768):
+        """Initialize with API key, model name, and image size."""
+        genai.configure(api_key=api_key)
+        # Ensure model name does NOT start with "models/" for synchronous API
+        if model_name.startswith("models/"):
+            model_name = model_name.replace("models/", "")
+        self.model = genai.GenerativeModel(model_name)
+        self.model_name = model_name
+        self.image_size = image_size
+
+        # Create the aesthetic rating prompt
+        self.prompt = """You are an expert wildlife photography curator evaluating camera trap images for aesthetic appeal.
+
+Rate this image on a scale of 0-10 for its potential as a "hero image" - meaning how visually compelling and aesthetically pleasing it would be to a general audience.
+
+Consider these factors:
+- Animal positioning and framing (centered, well-composed vs. edge-cropped or partially obscured)
+- Image clarity and focus (sharp vs. blurry)
+- Lighting quality (well-lit vs. too dark/bright/harsh shadows)
+- Animal behavior and pose (interesting/natural vs. awkward/unnatural)
+- Overall visual appeal (would this catch someone's attention?)
+
+Rating scale:
+- 0-2: Poor (blurry, poorly framed, or not visually appealing)
+- 3-4: Below average (some issues with composition, lighting, or clarity)
+- 5-6: Average (acceptable but unremarkable)
+- 7-8: Good (well-composed, clear, visually appealing)
+- 9-10: Excellent (exceptional composition, lighting, and visual impact)
+
+Respond with ONLY a JSON object in this exact format:
+{
+  "score": [number from 0-10],
+  "reasoning": "[2-3 sentence explanation of the score]"
+}
+
+Do not include any text before or after the JSON."""
+
+    def label_image(self, image_path: str) -> Dict[str, Any]:
+        """
+        Label a single image using synchronous API.
+
+        Args:
+            image_path: Path to the image file
+
+        Returns:
+            Dict with result information
+        """
+        start_time = time.time()
+
+        try:
+            # Load and resize image
+            image_bytes = ImageProcessor.resize_image_to_bytes(image_path, self.image_size)
+
+            # Prepare the image for the API
+            image_data = {
+                'mime_type': 'image/jpeg',
+                'data': image_bytes
+            }
+
+            # Generate response
+            response = self.model.generate_content([image_data, self.prompt])
+
+            processing_time = time.time() - start_time
+
+            # Parse the JSON response (handle markdown code blocks)
+            try:
+                response_text = response.text.strip()
+
+                # Remove markdown code blocks if present
+                if response_text.startswith('```json'):
+                    response_text = response_text[7:]
+                if response_text.endswith('```'):
+                    response_text = response_text[:-3]
+
+                response_text = response_text.strip()
+                result_json = json.loads(response_text)
+                score = float(result_json['score'])
+                reasoning = result_json['reasoning']
+
+                # Validate score range
+                if not (0 <= score <= 10):
+                    raise ValueError(f"Score {score} outside valid range 0-10")
+
+                return {
+                    'image_path': image_path,
+                    'image_filename': os.path.basename(image_path),
+                    'aesthetic_score': score,
+                    'reasoning': reasoning,
+                    'processing_time': processing_time,
+                    'success': True
+                }
+
+            except (json.JSONDecodeError, KeyError, ValueError) as e:
+                return {
+                    'image_path': image_path,
+                    'image_filename': os.path.basename(image_path),
+                    'aesthetic_score': 0.0,
+                    'reasoning': "",
+                    'processing_time': processing_time,
+                    'success': False,
+                    'error_message': f"Failed to parse response: {str(e)}. Response: {response.text[:200]}"
+                }
+
+        except Exception as e:
+            processing_time = time.time() - start_time
+            return {
+                'image_path': image_path,
+                'image_filename': os.path.basename(image_path),
+                'aesthetic_score': 0.0,
+                'reasoning': "",
+                'processing_time': processing_time,
+                'success': False,
+                'error_message': f"API error: {str(e)}"
+            }
+
+    def label_images(self, image_paths: List[str], rate_limit_pause: int = 2, batch_size: int = 10) -> List[Dict[str, Any]]:
+        """
+        Label multiple images synchronously with rate limiting.
+
+        Args:
+            image_paths: List of image file paths
+            rate_limit_pause: Seconds to pause after each batch
+            batch_size: Number of images to process before pausing
+
+        Returns:
+            List of result dictionaries
+        """
+        results = []
+
+        print(f"Processing {len(image_paths)} images synchronously...")
+
+        for i, image_path in enumerate(image_paths):
+            print(f"  [{i+1}/{len(image_paths)}] {os.path.basename(image_path)}...", end=" ", flush=True)
+
+            result = self.label_image(image_path)
+            results.append(result)
+
+            if result['success']:
+                print(f"✓ Score: {result['aesthetic_score']:.1f} ({result['processing_time']:.1f}s)")
+            else:
+                print(f"✗ Failed: {result.get('error_message', 'Unknown error')}")
+
+            # Rate limiting: brief pause every batch_size images
+            if (i + 1) % batch_size == 0 and i < len(image_paths) - 1:
+                print(f"  Pausing {rate_limit_pause}s for rate limiting...")
+                time.sleep(rate_limit_pause)
+
+        return results
+
+    def save_results(self, results: List[Dict[str, Any]], output_path: str):
+        """Save processed results to JSON file."""
+
+        successful_results = [r for r in results if r['success']]
+        failed_results = [r for r in results if not r['success']]
+
+        if successful_results:
+            scores = [r['aesthetic_score'] for r in successful_results]
+            avg_score = sum(scores) / len(scores)
+            min_score = min(scores)
+            max_score = max(scores)
+            processing_times = [r['processing_time'] for r in successful_results]
+            avg_processing_time = sum(processing_times) / len(processing_times)
+        else:
+            avg_score = min_score = max_score = avg_processing_time = 0.0
+
+        output_data = {
+            'labeling_info': {
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'model_used': self.model_name,
+                'processing_method': 'synchronous_api',
+                'total_images': len(results),
+                'successful_labels': len(successful_results),
+                'failed_labels': len(failed_results),
+                'success_rate': len(successful_results) / len(results) * 100 if results else 0,
+                'statistics': {
+                    'avg_score': avg_score,
+                    'min_score': min_score,
+                    'max_score': max_score,
+                    'avg_processing_time': avg_processing_time
+                }
+            },
+            'results': results
+        }
+
+        with open(output_path, 'w') as f:
+            json.dump(output_data, f, indent=2)
+
+        print(f"✓ Results saved to: {output_path}")
+        return output_path
+
+
 def main():
-    """Main batch processing workflow."""
+    """Main labeling workflow (supports both batch and synchronous modes)."""
 
     # Parse command line arguments
     parser = argparse.ArgumentParser(
-        description="Gemini Batch API Hero Image Labeling",
+        description="Gemini Hero Image Labeling (Batch or Synchronous)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Test with 5 images
-  python gemini_batch_labeling.py /path/to/candidates --output-dir /path/to/output --max-images 5
+  # Batch mode (default, recommended for large jobs)
+  python gemini_labeling.py /path/to/candidates --output-dir /path/to/output
 
-  # Process full dataset
-  python gemini_batch_labeling.py /path/to/candidates --output-dir /path/to/output
+  # Synchronous mode (good for smaller jobs, real-time results)
+  python gemini_labeling.py /path/to/candidates --output-dir /path/to/output --sync
 
-  # Cancel a running job
-  python gemini_batch_labeling.py --cancel batches/xyz789
+  # Test with 5 images (batch mode)
+  python gemini_labeling.py /path/to/candidates --output-dir /path/to/output --max-images 5
 
-  # Resume with batch ID (for running or completed jobs)
-  python gemini_batch_labeling.py --resume batches/xyz789 --output-dir /path/to/output
+  # Test with 5 images (synchronous mode)
+  python gemini_labeling.py /path/to/candidates --output-dir /path/to/output --max-images 5 --sync
 
-  # Resume with metadata file (automatically finds batch ID and image paths)
-  python gemini_batch_labeling.py --resume /path/to/gemini_batch_metadata_20250923_143022.json
+  # Cancel a running batch job
+  python gemini_labeling.py --cancel batches/xyz789
+
+  # Resume batch job with metadata file
+  python gemini_labeling.py --resume /path/to/gemini_batch_metadata_20250923_143022.json
         """
     )
     parser.add_argument(
@@ -653,17 +874,35 @@ Examples:
         default=768,
         help='Maximum dimension for resized images (default: 768)'
     )
+    parser.add_argument(
+        '--sync',
+        action='store_true',
+        help='Use synchronous API instead of batch API (2x cost, but real-time results)'
+    )
 
     args = parser.parse_args()
+
+    # Validate incompatible arguments
+    if args.sync and args.resume:
+        print("❌ Error: --sync and --resume are incompatible. Resume is only for batch jobs.")
+        sys.exit(1)
+    if args.sync and args.cancel:
+        print("❌ Error: --sync and --cancel are incompatible. Cancel is only for batch jobs.")
+        sys.exit(1)
 
     # Configuration from arguments
     CANDIDATES_DIR = args.candidates_dir
     OUTPUT_DIR = args.output_dir
 
-    print("=== Gemini Batch API Hero Image Labeling ===")
+    mode_str = "Synchronous" if args.sync else "Batch"
+    print(f"=== Gemini {mode_str} API Hero Image Labeling ===")
     if not args.cancel:
         print(f"Candidates directory: {CANDIDATES_DIR}")
         print(f"Output directory: {OUTPUT_DIR}")
+        if args.sync:
+            print(f"Mode: Synchronous (real-time processing, 2x cost)")
+        else:
+            print(f"Mode: Batch (async processing, 50% discount)")
 
     # Validate arguments (unless cancelling or resuming)
     if not args.cancel and not args.resume:
@@ -794,10 +1033,7 @@ Examples:
                 print(f"❌ Failed to resume job: {str(e)}")
             return
 
-        # Initialize processor
-        processor = GeminiBatchProcessor(api_key, args.model, args.image_size)
-
-        # Get image files
+        # Get image files first (common to both modes)
         print("\n2. Finding candidate images...")
         image_files = []
         if args.recursive:
@@ -825,15 +1061,88 @@ Examples:
             print("❌ No images found!")
             return
 
+        # ===== SYNCHRONOUS MODE =====
+        if args.sync:
+            # Initialize synchronous processor
+            processor = GeminiSyncProcessor(api_key, args.model, args.image_size)
+
+            # Estimate cost for synchronous mode
+            model_name_lower = processor.model_name.lower()
+            if 'gemini-2.5-flash' in model_name_lower or 'gemini-2-5-flash' in model_name_lower:
+                cost_per_image = GEMINI_25_FLASH_SYNC_COST_PER_IMAGE
+                model_info = "Gemini 2.5 Flash Sync"
+            elif 'gemini-2.5-pro' in model_name_lower or 'gemini-2-5-pro' in model_name_lower:
+                cost_per_image = GEMINI_25_PRO_SYNC_COST_PER_IMAGE
+                model_info = "Gemini 2.5 Pro Sync"
+            else:
+                cost_per_image = None
+                model_info = processor.model_name
+
+            if cost_per_image:
+                estimated_cost = len(image_files) * cost_per_image
+                print(f"\nEstimated cost ({model_info}): ${estimated_cost:.4f}")
+                if args.image_size != 768:
+                    print(f"⚠️  Warning: Cost estimate assumes 768px images. Your --image-size is {args.image_size}px.")
+                    print(f"   Actual cost may vary depending on image dimensions.")
+            else:
+                print(f"\n⚠️  Warning: Cost estimate unavailable for model {model_info}")
+                print(f"   Cost constants only defined for Gemini 2.5 Flash and Gemini 2.5 Pro")
+
+            # Ask for confirmation
+            if args.auto_confirm:
+                print("Auto-confirming synchronous processing...")
+            else:
+                response = input("Continue with synchronous processing? (y/N): ")
+                if response.lower() != 'y':
+                    print("Cancelled by user")
+                    return
+
+            # Process images synchronously
+            print(f"\n3. Processing images...")
+            start_time = time.time()
+            results = processor.label_images(image_paths=image_files)
+            total_time = time.time() - start_time
+
+            # Save results
+            print(f"\n4. Saving results...")
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            sanitized_model = sanitize_model_name(processor.model_name)
+            output_filename = f"gemini_sync_labels_{sanitized_model}_{timestamp}.json"
+            output_path = os.path.join(OUTPUT_DIR, output_filename)
+
+            processor.save_results(results, output_path)
+
+            # Summary
+            successful = len([r for r in results if r['success']])
+            failed = len([r for r in results if not r['success']])
+
+            print(f"\n🎉 Synchronous labeling complete!")
+            print(f"✓ Total time: {total_time:.1f}s")
+            print(f"✓ Processed: {len(results)} images")
+            print(f"✓ Successful: {successful}")
+            print(f"✗ Failed: {failed}")
+            print(f"✓ Results: {output_path}")
+
+            if successful > 0:
+                scores = [r['aesthetic_score'] for r in results if r['success']]
+                print(f"📊 Score range: {min(scores):.1f} - {max(scores):.1f}")
+                print(f"📊 Average score: {sum(scores)/len(scores):.1f}")
+
+            return
+
+        # ===== BATCH MODE (DEFAULT) =====
+        # Initialize batch processor
+        processor = GeminiBatchProcessor(api_key, args.model, args.image_size)
+
         # Ask for confirmation (unless auto-confirm is set)
-        # Estimate cost based on model type
+        # Estimate cost based on model type and mode
         model_name_lower = processor.model_name.lower()
         if 'gemini-2.5-flash' in model_name_lower or 'gemini-2-5-flash' in model_name_lower:
-            cost_per_image = GEMINI_25_FLASH_COST_PER_IMAGE
-            model_info = "Gemini 2.5 Flash"
+            cost_per_image = GEMINI_25_FLASH_BATCH_COST_PER_IMAGE
+            model_info = "Gemini 2.5 Flash Batch"
         elif 'gemini-2.5-pro' in model_name_lower or 'gemini-2-5-pro' in model_name_lower:
-            cost_per_image = GEMINI_25_PRO_COST_PER_IMAGE
-            model_info = "Gemini 2.5 Pro"
+            cost_per_image = GEMINI_25_PRO_BATCH_COST_PER_IMAGE
+            model_info = "Gemini 2.5 Pro Batch"
         else:
             cost_per_image = None
             model_info = processor.model_name
