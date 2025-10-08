@@ -78,9 +78,20 @@ python -m hero_images.gemini_labeling /path/to/candidates --output-dir /path/to/
 - 2x cost vs. batch mode
 - Real-time processing with immediate results
 - Progress updates as images are processed
+- Supports checkpointing and resume (like Ollama labeling)
 
 ```bash
+# Basic synchronous processing (with automatic checkpointing every 1000 images)
 python -m hero_images.gemini_labeling /path/to/candidates --output-dir /path/to/output --recursive --sync
+
+# Resume from checkpoint if interrupted
+python -m hero_images.gemini_labeling /path/to/candidates --output-dir /path/to/output --sync --resume /path/to/output/gemini_sync_labels_YYYYMMDD_HHMMSS.tmp.json --recursive
+
+# Custom checkpoint interval
+python -m hero_images.gemini_labeling /path/to/candidates --output-dir /path/to/output --sync --checkpoint-interval 500 --recursive
+
+# Disable checkpointing for short jobs
+python -m hero_images.gemini_labeling /path/to/candidates --output-dir /path/to/output --sync --checkpoint-interval 0 --recursive
 ```
 
 The `--model` argument is optional; the default is `gemini-2.5-flash`, you can also use `gemini-2.5-pro`.
@@ -204,6 +215,8 @@ export OLLAMA_LOAD_TIMEOUT=30m
 - `--model MODEL` - Gemini model to use (default: gemini-2.5-flash)
 - `--auto-confirm` or `-y` - Skip cost confirmation prompt
 - `--sync` - Use synchronous API instead of batch (2x cost, real-time results)
+- `--checkpoint-interval N` - Save progress every N images in sync mode (default: 1000, use 0 to disable)
+- `--resume FILE` - Resume from checkpoint file (*.tmp.json for sync mode) or batch job metadata
 
 #### Shared parameters for local VLM labeling
 
@@ -211,12 +224,13 @@ export OLLAMA_LOAD_TIMEOUT=30m
 - `--image-size N` - Maximum dimension for resized images (default: 768)
 
 
-#### Checkpoint/resume options for both local VLM labeling Scripts
+#### Checkpoint/resume options for local VLM labeling and Gemini sync mode
 
 - `--checkpoint-interval N` - Save progress every N images (default: 1000, use 0 to disable)
 - `--resume FILE.tmp.json` - Resume from specific checkpoint file
 - Checkpoint files are automatically cleaned up on successful completion
 - If process crashes, resume with `--resume /path/to/output/filename.tmp.json`
+- Available for: Ollama labeling, vLLM labeling, and Gemini synchronous mode
 
 
 ### Visualize results
@@ -284,7 +298,19 @@ Resume behavior:
 - **Completed jobs**: Immediately retrieves and saves results
 - **Failed/cancelled jobs**: Shows status and exits
 
-Resuming is only available for batch jobs, not synchronous processing.
+### Resume synchronous jobs from checkpoint
+
+Synchronous mode now supports checkpointing (like Ollama labeling):
+
+```bash
+python -m hero_images.gemini_labeling /path/to/candidates --output-dir /path/to/output --sync --resume /path/to/output/gemini_sync_labels_YYYYMMDD_HHMMSS.tmp.json --recursive
+```
+
+Checkpoint behavior:
+- Automatically saves progress every 1000 images (configurable with `--checkpoint-interval`)
+- Skips already-processed images when resuming
+- Cleans up checkpoint file on successful completion
+- Use `--checkpoint-interval 0` to disable for short jobs
 
 
 ## Data pipeline
@@ -308,7 +334,6 @@ Labeled dataset (0-10 aesthetic scores)
 - **Hyperparameter tuning**: Experiment with temperature, max_tokens
 - **VLM comparison**: Compare quality between Gemini models and local VLMs, e.g. highlighting images with significant disagreement
 - **Human labeling**: Implement Labelme integration for human validation
-- **Production deployment**: Scale to operational camera trap processing, e.g. include checkpoints to handle the case where large jobs are interrupted
 
 
 ## Technical notes

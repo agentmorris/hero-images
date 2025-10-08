@@ -753,6 +753,57 @@ Do not include any text before or after the JSON."""
 
         return results
 
+    def save_checkpoint(self, results: List[Dict[str, Any]], checkpoint_path: str):
+        """Save checkpoint file with atomic write."""
+        successful_results = [r for r in results if r['success']]
+        failed_results = [r for r in results if not r['success']]
+
+        if successful_results:
+            scores = [r['aesthetic_score'] for r in successful_results]
+            avg_score = sum(scores) / len(scores)
+            min_score = min(scores)
+            max_score = max(scores)
+        else:
+            avg_score = min_score = max_score = 0.0
+
+        checkpoint_data = {
+            'checkpoint_info': {
+                'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'model_used': self.model_name,
+                'processing_method': 'synchronous_api',
+                'total_images': len(results),
+                'successful_labels': len(successful_results),
+                'failed_labels': len(failed_results),
+                'success_rate': len(successful_results) / len(results) * 100 if results else 0,
+                'statistics': {
+                    'avg_score': avg_score,
+                    'min_score': min_score,
+                    'max_score': max_score
+                },
+                'is_checkpoint': True
+            },
+            'results': results
+        }
+
+        # Atomic write: write to backup file first, then rename
+        backup_path = checkpoint_path.replace('.tmp.json', '.bk.tmp.json')
+        try:
+            with open(backup_path, 'w') as f:
+                json.dump(checkpoint_data, f, indent=2)
+
+            # Remove old checkpoint if it exists
+            if os.path.exists(checkpoint_path):
+                os.remove(checkpoint_path)
+
+            # Rename backup to checkpoint
+            os.rename(backup_path, checkpoint_path)
+
+        except Exception as e:
+            # Clean up backup file if something went wrong
+            if os.path.exists(backup_path):
+                os.remove(backup_path)
+            raise e
+
     def save_results(self, results: List[Dict[str, Any]], output_path: str):
         """Save processed results to JSON file."""
 
@@ -795,6 +846,24 @@ Do not include any text before or after the JSON."""
         return output_path
 
 
+def load_checkpoint(checkpoint_path: str) -> List[Dict[str, Any]]:
+    """Load results from a checkpoint file."""
+    try:
+        with open(checkpoint_path, 'r') as f:
+            data = json.load(f)
+
+        if 'results' in data:
+            print(f"✅ Loaded {len(data['results'])} results from checkpoint")
+            return data['results']
+        else:
+            print("⚠️  Checkpoint file format not recognized, starting fresh")
+            return []
+    except Exception as e:
+        print(f"❌ Error loading checkpoint: {e}")
+        print("Starting fresh...")
+        return []
+
+
 def main():
     """Main labeling workflow (supports both batch and synchronous modes)."""
 
@@ -809,6 +878,15 @@ Examples:
 
   # Synchronous mode (good for smaller jobs, real-time results)
   python gemini_labeling.py /path/to/candidates --output-dir /path/to/output --sync
+
+  # Synchronous mode with custom checkpoint interval
+  python gemini_labeling.py /path/to/candidates --output-dir /path/to/output --sync --checkpoint-interval 500
+
+  # Resume from synchronous checkpoint
+  python gemini_labeling.py /path/to/candidates --output-dir /path/to/output --sync --resume /path/to/output/gemini_sync_labels_*.tmp.json
+
+  # Disable checkpointing for short sync jobs
+  python gemini_labeling.py /path/to/candidates --output-dir /path/to/output --sync --checkpoint-interval 0
 
   # Test with 5 images (batch mode)
   python gemini_labeling.py /path/to/candidates --output-dir /path/to/output --max-images 5
@@ -856,7 +934,7 @@ Examples:
     parser.add_argument(
         '--resume',
         type=str,
-        help='Retrieve results from a completed batch job by providing its name/ID'
+        help='Resume from checkpoint file (*.tmp.json for sync mode) or retrieve batch job results (metadata file or job ID for batch mode)'
     )
     parser.add_argument(
         '--recursive', '-r',
@@ -879,13 +957,22 @@ Examples:
         action='store_true',
         help='Use synchronous API instead of batch API (2x cost, but real-time results)'
     )
+    parser.add_argument(
+        '--checkpoint-interval',
+        type=int,
+        default=1000,
+        help='Save checkpoint every N images in sync mode (default: 1000, use 0 to disable)'
+    )
 
     args = parser.parse_args()
 
     # Validate incompatible arguments
+    # Note: --sync with --resume is now allowed for checkpoint files (*.tmp.json)
     if args.sync and args.resume:
-        print("❌ Error: --sync and --resume are incompatible. Resume is only for batch jobs.")
-        sys.exit(1)
+        # Check if resume argument is a checkpoint file or batch job
+        if not (args.resume.endswith('.tmp.json') or 'checkpoint' in args.resume.lower()):
+            print("❌ Error: --sync with --resume requires a checkpoint file (*.tmp.json), not a batch job ID/metadata file.")
+            sys.exit(1)
     if args.sync and args.cancel:
         print("❌ Error: --sync and --cancel are incompatible. Cancel is only for batch jobs.")
         sys.exit(1)
@@ -937,8 +1024,13 @@ Examples:
                 print(f"❌ Failed to cancel job: {str(e)}")
             return
 
-        # Handle resume if requested
+        # Handle resume if requested (batch mode only - sync mode is handled above)
         if args.resume:
+            # Check if this is a sync checkpoint file
+            if args.resume.endswith('.tmp.json') or 'checkpoint' in args.resume.lower():
+                print("❌ Error: Synchronous checkpoint files can only be used with --sync mode")
+                sys.exit(1)
+
             processor = GeminiBatchProcessor(api_key, args.model, args.image_size)
 
             # Determine if input is a batch ID or metadata file
@@ -1066,7 +1158,42 @@ Examples:
             # Initialize synchronous processor
             processor = GeminiSyncProcessor(api_key, args.model, args.image_size)
 
-            # Estimate cost for synchronous mode
+            # Ensure output directory exists
+            os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+            # Handle resume logic
+            existing_results = []
+            processed_filenames = set()
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            sanitized_model = sanitize_model_name(processor.model_name)
+            output_filename = f"gemini_sync_labels_{sanitized_model}_{timestamp}.json"
+            output_path = os.path.join(OUTPUT_DIR, output_filename)
+            checkpoint_path = output_path.replace('.json', '.tmp.json')
+
+            if args.resume:
+                if not os.path.exists(args.resume):
+                    print(f"❌ Error: Checkpoint file does not exist: {args.resume}")
+                    sys.exit(1)
+
+                print(f"\n3. Loading checkpoint from {args.resume}...")
+                existing_results = load_checkpoint(args.resume)
+                processed_filenames = {r['image_filename'] for r in existing_results}
+
+                # Use the same timestamp/naming as the checkpoint for consistency
+                checkpoint_basename = os.path.basename(args.resume)
+                if checkpoint_basename.endswith('.tmp.json'):
+                    output_filename = checkpoint_basename.replace('.tmp.json', '.json')
+                    output_path = os.path.join(OUTPUT_DIR, output_filename)
+                    checkpoint_path = args.resume  # Continue using the same checkpoint file
+
+            # Filter images to only process those not already completed
+            images_to_process = []
+            for image_path in image_files:
+                filename = os.path.basename(image_path)
+                if filename not in processed_filenames:
+                    images_to_process.append(image_path)
+
+            # Estimate cost for synchronous mode (only for remaining images)
             model_name_lower = processor.model_name.lower()
             if 'gemini-2.5-flash' in model_name_lower or 'gemini-2-5-flash' in model_name_lower:
                 cost_per_image = GEMINI_25_FLASH_SYNC_COST_PER_IMAGE
@@ -1079,7 +1206,7 @@ Examples:
                 model_info = processor.model_name
 
             if cost_per_image:
-                estimated_cost = len(image_files) * cost_per_image
+                estimated_cost = len(images_to_process) * cost_per_image
                 print(f"\nEstimated cost ({model_info}): ${estimated_cost:.4f}")
                 if args.image_size != 768:
                     print(f"⚠️  Warning: Cost estimate assumes 768px images. Your --image-size is {args.image_size}px.")
@@ -1088,43 +1215,84 @@ Examples:
                 print(f"\n⚠️  Warning: Cost estimate unavailable for model {model_info}")
                 print(f"   Cost constants only defined for Gemini 2.5 Flash and Gemini 2.5 Pro")
 
-            # Ask for confirmation
-            if args.auto_confirm:
-                print("Auto-confirming synchronous processing...")
+            if args.resume:
+                print(f"📥 Resuming: {len(existing_results)} already processed, {len(images_to_process)} remaining")
             else:
-                response = input("Continue with synchronous processing? (y/N): ")
-                if response.lower() != 'y':
-                    print("Cancelled by user")
-                    return
+                print(f"🆕 Starting fresh: {len(images_to_process)} images to process")
 
-            # Process images synchronously
-            print(f"\n3. Processing images...")
-            start_time = time.time()
-            results = processor.label_images(image_paths=image_files)
-            total_time = time.time() - start_time
+            if not images_to_process:
+                print("✅ All images already processed!")
+                final_results = existing_results
+            else:
+                # Ask for confirmation
+                if args.auto_confirm:
+                    print("Auto-confirming synchronous processing...")
+                else:
+                    response = input("Continue with synchronous processing? (y/N): ")
+                    if response.lower() != 'y':
+                        print("Cancelled by user")
+                        return
 
-            # Save results
-            print(f"\n4. Saving results...")
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            sanitized_model = sanitize_model_name(processor.model_name)
-            output_filename = f"gemini_sync_labels_{sanitized_model}_{timestamp}.json"
-            output_path = os.path.join(OUTPUT_DIR, output_filename)
+                # Process images synchronously with checkpointing
+                step_num = 4 if args.resume else 3
+                print(f"\n{step_num}. Processing images...")
+                start_time = time.time()
 
-            processor.save_results(results, output_path)
+                new_results = []
+                all_results = existing_results.copy()
+
+                for i, image_path in enumerate(images_to_process):
+                    print(f"  [{i+1}/{len(images_to_process)}] {os.path.basename(image_path)}...", end=" ", flush=True)
+
+                    result = processor.label_image(image_path)
+                    new_results.append(result)
+                    all_results.append(result)
+
+                    if result['success']:
+                        print(f"✓ Score: {result['aesthetic_score']:.1f} ({result['processing_time']:.1f}s)")
+                    else:
+                        print(f"✗ Failed: {result.get('error_message', 'Unknown error')}")
+
+                    # Save checkpoint periodically
+                    if args.checkpoint_interval > 0 and (i + 1) % args.checkpoint_interval == 0:
+                        print(f"💾 Saving checkpoint after {len(all_results)} total images...")
+                        processor.save_checkpoint(all_results, checkpoint_path)
+
+                    # Rate limiting: brief pause every 10 images
+                    if (i + 1) % 10 == 0 and i < len(images_to_process) - 1:
+                        print(f"  Pausing 2s for rate limiting...")
+                        time.sleep(2)
+
+                total_time = time.time() - start_time
+                final_results = all_results
+
+            # Save final results
+            step_num = 5 if args.resume else 4
+            print(f"\n{step_num}. Saving final results...")
+            processor.save_results(final_results, output_path)
+
+            # Clean up checkpoint file on successful completion
+            if args.checkpoint_interval > 0 and os.path.exists(checkpoint_path):
+                try:
+                    os.remove(checkpoint_path)
+                    print(f"🧹 Cleaned up checkpoint file: {checkpoint_path}")
+                except Exception as e:
+                    print(f"⚠️  Could not remove checkpoint file: {e}")
 
             # Summary
-            successful = len([r for r in results if r['success']])
-            failed = len([r for r in results if not r['success']])
+            successful = len([r for r in final_results if r['success']])
+            failed = len([r for r in final_results if not r['success']])
 
             print(f"\n🎉 Synchronous labeling complete!")
-            print(f"✓ Total time: {total_time:.1f}s")
-            print(f"✓ Processed: {len(results)} images")
+            if 'total_time' in locals():
+                print(f"✓ Total time: {total_time:.1f}s")
+            print(f"✓ Processed: {len(final_results)} images")
             print(f"✓ Successful: {successful}")
             print(f"✗ Failed: {failed}")
             print(f"✓ Results: {output_path}")
 
             if successful > 0:
-                scores = [r['aesthetic_score'] for r in results if r['success']]
+                scores = [r['aesthetic_score'] for r in final_results if r['success']]
                 print(f"📊 Score range: {min(scores):.1f} - {max(scores):.1f}")
                 print(f"📊 Average score: {sum(scores)/len(scores):.1f}")
 
