@@ -61,6 +61,11 @@ python -m hero_images.generate_sequence_aware_candidates_optimized
 
 ### Label images
 
+All labeling scripts accept flexible input sources for the first positional argument:
+- **Directory**: Process all images in a directory (use `--recursive` for subdirectories)
+- **Text file**: One absolute image path per line (lines starting with `#` are treated as comments)
+- **JSON file**: A JSON array containing absolute image paths
+
 #### Label images with Gemini 2.5 Flash
 
 The Gemini labeling script supports two modes:
@@ -71,7 +76,14 @@ The Gemini labeling script supports two modes:
 - Can resume/cancel jobs
 
 ```bash
+# From directory
 python -m hero_images.gemini_labeling /path/to/candidates --output-dir /path/to/output --recursive
+
+# From text file with image paths
+python -m hero_images.gemini_labeling /path/to/image_list.txt --output-dir /path/to/output
+
+# From JSON file with image paths
+python -m hero_images.gemini_labeling /path/to/image_list.json --output-dir /path/to/output
 ```
 
 **Synchronous mode (good for smaller jobs):**

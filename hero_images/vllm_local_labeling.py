@@ -40,6 +40,56 @@ def sanitize_model_name(model_name: str) -> str:
     return model_name.replace(':', '-').replace('/', '-')
 
 
+def enumerate_image_files(source: str, recursive: bool = False) -> List[str]:
+    """
+    Enumerate image files from a source (directory, text file, or JSON file).
+
+    Args:
+        source: Path to directory, text file with image paths, or JSON file with list of paths
+        recursive: If source is a directory, search recursively
+
+    Returns:
+        List of absolute image file paths
+    """
+    image_files = []
+
+    if os.path.isdir(source):
+        # Source is a directory - enumerate image files
+        if recursive:
+            for root, dirs, files in os.walk(source):
+                for filename in files:
+                    if filename.lower().endswith(('.jpg', '.jpeg', '.png')):
+                        full_path = os.path.join(root, filename)
+                        image_files.append(full_path)
+        else:
+            for filename in os.listdir(source):
+                if filename.lower().endswith(('.jpg', '.jpeg', '.png')):
+                    full_path = os.path.join(source, filename)
+                    image_files.append(full_path)
+
+    elif os.path.isfile(source):
+        # Source is a file - could be text or JSON
+        if source.lower().endswith('.json'):
+            # JSON file with list of paths
+            with open(source, 'r') as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    image_files = [path for path in data if isinstance(path, str)]
+                else:
+                    raise ValueError(f"JSON file must contain a list of image paths, got {type(data)}")
+        else:
+            # Text file with one path per line
+            with open(source, 'r') as f:
+                for line in f:
+                    path = line.strip()
+                    if path and not path.startswith('#'):  # Skip empty lines and comments
+                        image_files.append(path)
+    else:
+        raise FileNotFoundError(f"Source does not exist: {source}")
+
+    return image_files
+
+
 class GPUChecker:
     """Check GPU memory and suggest appropriate model."""
 
@@ -439,9 +489,9 @@ Examples:
     )
 
     parser.add_argument(
-        'candidates_dir',
+        'source',
         nargs='?',
-        help='Directory containing candidate images to label'
+        help='Directory containing candidate images, text file with image paths (one per line), or JSON file with list of image paths'
     )
     parser.add_argument(
         '--output-dir', '-o',
@@ -494,7 +544,7 @@ Examples:
         return
 
     # Validate arguments
-    if not args.candidates_dir:
+    if not args.source:
         parser.print_help()
         sys.exit(1)
 
@@ -502,8 +552,8 @@ Examples:
         print("❌ Error: --output-dir is required")
         sys.exit(1)
 
-    if not os.path.exists(args.candidates_dir):
-        print(f"❌ Error: Candidates directory does not exist: {args.candidates_dir}")
+    if not os.path.exists(args.source):
+        print(f"❌ Error: Source does not exist: {args.source}")
         sys.exit(1)
 
     try:
@@ -522,19 +572,7 @@ Examples:
 
         # Get image files
         print("\n2. Finding candidate images...")
-        image_files = []
-        if args.recursive:
-            for root, dirs, files in os.walk(args.candidates_dir):
-                for filename in files:
-                    if filename.lower().endswith(('.jpg', '.jpeg', '.png')):
-                        full_path = os.path.join(root, filename)
-                        image_files.append(full_path)
-        else:
-            for filename in os.listdir(args.candidates_dir):
-                if filename.lower().endswith(('.jpg', '.jpeg', '.png')):
-                    full_path = os.path.join(args.candidates_dir, filename)
-                    image_files.append(full_path)
-
+        image_files = enumerate_image_files(args.source, args.recursive)
         image_files.sort()
 
         # Limit number of images if specified
