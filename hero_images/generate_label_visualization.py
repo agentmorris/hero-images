@@ -68,8 +68,17 @@ def get_sample_filenames(sample_from: Union[str, List[str]], sample: int, random
             with open(sample_from, 'r') as f:
                 data = json.load(f)
             filenames = [r['image_filename'] for r in data['results']]
+        elif os.path.isfile(sample_from) and sample_from.endswith('.txt'):
+            # Text file: flat list of filenames (one per line)
+            with open(sample_from, 'r') as f:
+                filenames = []
+                for line in f:
+                    line = line.strip()
+                    if line:  # Ignore blank lines
+                        # Extract just the filename from the path
+                        filenames.append(os.path.basename(line))
         else:
-            raise ValueError(f"sample_from must be a directory or JSON file: {sample_from}")
+            raise ValueError(f"sample_from must be a directory, JSON file, or TXT file: {sample_from}")
     else:
         # List of files
         filenames = [os.path.basename(f) for f in sample_from]
@@ -953,11 +962,6 @@ def generate_index_html(index_path: str, html_files_info: List[Dict[str, Any]], 
             <strong>Models compared:</strong> {total_files}
         </div>
 
-        <div class="instructions">
-            <h3>💡 How to Compare Models</h3>
-            <p>Click the links below to open each model's results in a new tab. Since all models used identical sampling parameters, you can compare them side-by-side by scrolling through the results in each tab.</p>
-        </div>
-
         <div class="models-grid">
     """
 
@@ -992,7 +996,7 @@ def generate_index_html(index_path: str, html_files_info: List[Dict[str, Any]], 
                     </div>
                 </div>
 
-                <a href="{file_info['html_filename']}" target="_blank" class="view-button">
+                <a href="{file_info['html_filename']}" class="view-button">
                     📋 View Results
                 </a>
             </div>
