@@ -10,6 +10,8 @@ The system will process large camera trap collections to identify candidates wit
 1. **Candidate selection**: Heuristic-based filtering using AI detection results (typically MegaDetector and SpeciesNet) to identify promising images
 2. **Labeling**: LLM aesthetic rating using Gemini 2.5 Flash or local VLMs
 
+[This page](https://lila.science/public/misc/hero-image-samples/by-score/index.html) shows examples of the output of this system on a collection of images from [Snapshot Serengeti](https://lila.science/datasets/snapshot-serengeti/).
+
 
 ### Scripts
 
